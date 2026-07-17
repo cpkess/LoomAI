@@ -1,0 +1,37 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: loomai
+      POSTGRES_PASSWORD: loomai
+      POSTGRES_DB: loomai
+    ports:
+      - "5432:5432"
+    volumes:
+      - loomai-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loomai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://loomai:loomai@db:5432/loomai
+      # Generate with: openssl rand -base64 32
+      LOOMAI_SECRET: ${LOOMAI_SECRET:?set LOOMAI_SECRET in your environment or .env}
+      AUTH_TRUST_HOST: "true"
+    ports:
+      - "3000:3000"
+    extra_hosts:
+      # Lets the app reach an LM Studio / Ollama server running on the host machine
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  loomai-db:
