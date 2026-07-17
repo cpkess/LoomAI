@@ -80,9 +80,12 @@ export const agentTasks = pgTable("agent_tasks", {
   title: text("title").notNull(),
   description: text("description"),
   status: taskStatus("status").notNull().default("pending"),
+  result: text("result"),
+  error: text("error"),
   createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const agentTaskAssignments = pgTable("agent_task_assignments", {

@@ -6,7 +6,8 @@ LoomAI turns an organization into a hybrid human + AI company. Alongside your hu
 
 ## Features
 
-- **AI corporation model** — AI employees with job titles, reporting lines (to humans or other agents), and department staffing; a live org chart of humans and AI side by side. Hierarchical task delegation is schema-ready (`agent_tasks`) for the orchestration engine to come.
+- **AI corporation model** — AI employees with job titles, reporting lines (to humans or other agents), and department staffing; a live org chart of humans and AI side by side.
+- **Hierarchical delegation** — hand a task to any AI employee from the Tasks page. Managers decompose it into subtasks (JSON plan), route each to the best-suited direct report, workers execute with their own persona/model/knowledge, and the manager aggregates the final deliverable. Agents without reports (or with an unparseable plan) complete tasks solo, so weaker local models degrade gracefully. Every step is persisted (`agent_tasks`) and streamed to the UI.
 - **Local-first providers** — LM Studio (native `/api/v0` catalog, health, auto-discovery of local servers), Ollama, Anthropic, and any OpenAI-compatible endpoint (OpenAI, OpenRouter, Azure, vLLM…). Providers are plugins behind one interface: switching engines never touches app code.
 - **Multi-tenant** — organizations are fully isolated; roles are platform admin → org admin → workspace manager → member, enforced by a central `authorize()` layer.
 - **Streaming chat** — department conversations with any enabled model or AI employee, markdown rendering, history, auto-titles, token accounting.
@@ -77,7 +78,7 @@ Design rules the codebase follows:
 
 ## Roadmap
 
-- Delegation engine: coordinator agents decomposing tasks across their reports (`agent_tasks` schema already in place)
+- Multi-level delegation (reports delegating onward down the chart) and agent-to-agent messaging
 - Tool registry & execution (web search, SQL, REST, GitHub…) per workspace
 - LDAP / OIDC auth backends
 - Web-page ingestion, OCR plugin

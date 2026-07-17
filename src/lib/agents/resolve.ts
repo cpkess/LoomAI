@@ -52,22 +52,12 @@ export async function resolveChatConfig(
     if (!agent) throw new Error("Agent not found");
     if (agent.status !== "active") throw new Error(`${agent.name} is currently paused`);
 
-    for (const link of await db.query.agentCollections.findMany({ where: eq(agentCollections.agentId, agent.id) })) {
-      collectionIds.add(link.collectionId);
-    }
-
-    let persona = agent.personaText ?? undefined;
-    if (!persona && agent.personaPromptId) {
-      const prompt = await db.query.prompts.findFirst({ where: eq(prompts.id, agent.personaPromptId) });
-      if (prompt) {
-        persona = interpolatePrompt(prompt.content, { name: agent.name, company: org.name });
-      }
-    }
-    const identity = `You are ${agent.name}, ${org.name}'s "${agent.title}". You are an AI employee of ${org.name}.`;
+    const runtime = await resolveAgentRuntime(agent, org);
+    for (const id of runtime.collectionIds) collectionIds.add(id);
 
     return {
-      modelDbId: agent.modelId ?? workspaceSettings.defaultModelId ?? (await fallbackModelId()),
-      system: persona ? `${identity}\n\n${persona}` : identity,
+      modelDbId: runtime.modelDbId ?? workspaceSettings.defaultModelId ?? (await fallbackModelId()),
+      system: runtime.system,
       collectionIds: [...collectionIds],
       agent,
     };
@@ -88,8 +78,40 @@ export async function resolveChatConfig(
   };
 }
 
+export interface AgentRuntime {
+  /** The agent's own model, or null when it should inherit a default. */
+  modelDbId: string | null;
+  /** Identity + persona system prompt. */
+  system: string;
+  /** The agent's own knowledge collections. */
+  collectionIds: string[];
+}
+
+/**
+ * Resolve an AI employee's working configuration — identity/persona prompt,
+ * model, and assigned knowledge. Used by both chat and the delegation engine.
+ */
+export async function resolveAgentRuntime(agent: Agent, org: Organization): Promise<AgentRuntime> {
+  const links = await db.query.agentCollections.findMany({ where: eq(agentCollections.agentId, agent.id) });
+
+  let persona = agent.personaText ?? undefined;
+  if (!persona && agent.personaPromptId) {
+    const prompt = await db.query.prompts.findFirst({ where: eq(prompts.id, agent.personaPromptId) });
+    if (prompt) {
+      persona = interpolatePrompt(prompt.content, { name: agent.name, company: org.name });
+    }
+  }
+  const identity = `You are ${agent.name}, ${org.name}'s "${agent.title}". You are an AI employee of ${org.name}.`;
+
+  return {
+    modelDbId: agent.modelId,
+    system: persona ? `${identity}\n\n${persona}` : identity,
+    collectionIds: links.map((l) => l.collectionId),
+  };
+}
+
 /** First enabled chat model, so fresh installs work without per-workspace setup. */
-async function fallbackModelId(): Promise<string | null> {
+export async function fallbackModelId(): Promise<string | null> {
   const models = await listEnabledModels("chat");
   return models[0]?.id ?? null;
 }
