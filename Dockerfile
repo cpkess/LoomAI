@@ -20,6 +20,8 @@ COPY --from=builder --chown=loomai:loomai /app/.next/static ./.next/static
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/node_modules/postgres ./node_modules/postgres
+COPY --from=builder /app/node_modules/bcryptjs ./node_modules/bcryptjs
+RUN mkdir -p /data && chown loomai:loomai /data
 USER loomai
 EXPOSE 3000
 ENV PORT=3000 HOSTNAME=0.0.0.0

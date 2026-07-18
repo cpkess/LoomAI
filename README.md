@@ -15,20 +15,25 @@ LoomAI turns an organization into a hybrid human + AI company. Alongside your hu
 - **Prompt library** — reusable prompts with `{{variables}}`, categories, and version history; agent personas draw from it.
 - **Admin surfaces** — platform: providers, models, organizations, live health + ingestion queue. Org: members & roles, departments, AI employees, knowledge, prompts.
 
-## Quickstart (development)
+## Quickstart
 
-Requirements: Node 22+, Docker.
+**One step** (requires Docker):
 
 ```bash
-cp .env.example .env            # then set LOOMAI_SECRET (openssl rand -base64 32)
-docker compose up -d db         # Postgres 17 + pgvector
-npm install
-npm run db:migrate
-npm run db:seed                 # admin@loomai.local / loomai-admin + demo org
-npm run dev
+docker compose up -d --build
 ```
 
-Sign in at http://localhost:3000 as `admin@loomai.local` / `loomai-admin` (override with `LOOMAI_ADMIN_PASSWORD` before seeding).
+That's the whole install: it builds the app, starts Postgres 17 + pgvector, generates and persists a `LOOMAI_SECRET`, runs migrations, and seeds a platform admin plus a demo organization. Then sign in at http://localhost:3000 as `admin@loomai.local` / `loomai-admin`.
+
+Optional environment overrides: `LOOMAI_SECRET` (pin your own; otherwise one is generated on first boot and kept in the `loomai-data` volume) and `LOOMAI_ADMIN_PASSWORD` (seeded admin password).
+
+**Development mode** (hot reload; requires Node 22+ and Docker for the database):
+
+```bash
+./setup.sh
+```
+
+The script creates `.env` with a generated secret, starts Postgres, installs dependencies, migrates, seeds, and runs `npm run dev` — same URL and login as above.
 
 ### Connect LM Studio
 
@@ -39,13 +44,9 @@ Sign in at http://localhost:3000 as `admin@loomai.local` / `loomai-admin` (overr
 
 Any OpenAI-compatible server works the same way: add a provider with its base URL (e.g. `https://api.openai.com/v1` plus API key) and sync.
 
-## Production (Docker Compose)
+## Production notes
 
-```bash
-LOOMAI_SECRET=$(openssl rand -base64 32) docker compose up -d --build
-```
-
-The app container runs migrations on boot and serves on port 3000. `host.docker.internal` is mapped so a LM Studio/Ollama instance on the host machine is reachable from inside the container.
+The same `docker compose up -d --build` is the production deployment: the app container runs migrations and (first boot only) seeding before serving on port 3000. For real deployments pin `LOOMAI_SECRET` and `LOOMAI_ADMIN_PASSWORD` in the environment. `host.docker.internal` is mapped so an LM Studio/Ollama instance on the host machine is reachable from inside the container — when registering the provider from a containerized app, use `http://host.docker.internal:1234` (Auto-discover probes it automatically).
 
 ## Architecture
 

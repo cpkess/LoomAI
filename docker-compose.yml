@@ -24,14 +24,21 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://loomai:loomai@db:5432/loomai
-      # Generate with: openssl rand -base64 32
-      LOOMAI_SECRET: ${LOOMAI_SECRET:?set LOOMAI_SECRET in your environment or .env}
+      # Optional: pin your own secret (openssl rand -base64 32). When unset,
+      # one is generated on first boot and persisted in the loomai-data volume.
+      LOOMAI_SECRET: ${LOOMAI_SECRET:-}
+      # Optional: password for the seeded admin@loomai.local account
+      # (default: loomai-admin).
+      LOOMAI_ADMIN_PASSWORD: ${LOOMAI_ADMIN_PASSWORD:-}
       AUTH_TRUST_HOST: "true"
     ports:
       - "3000:3000"
+    volumes:
+      - loomai-data:/data
     extra_hosts:
       # Lets the app reach an LM Studio / Ollama server running on the host machine
       - "host.docker.internal:host-gateway"
 
 volumes:
   loomai-db:
+  loomai-data:
