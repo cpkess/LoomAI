@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 
 import { listEnabledModels } from "@/lib/ai/registry";
+import { getGovernance } from "@/lib/company/actions";
 import { requireOrgPage } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
 import { workspaces } from "@/lib/db/schema";
@@ -35,6 +36,7 @@ export default async function SettingsPage({ params }: { params: Promise<{ orgSl
           defaultModelId: ((d.settings ?? {}) as { defaultModelId?: string }).defaultModelId ?? null,
         }))}
         models={models.map((m) => ({ id: m.id, label: `${m.displayName} · ${m.providerName}` }))}
+        governance={getGovernance(ctx.org)}
       />
     </div>
   );

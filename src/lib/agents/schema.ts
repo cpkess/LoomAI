@@ -23,6 +23,7 @@ export const agentSchema = z.object({
   workspaceIds: z.array(z.string().uuid()).default([]),
   collectionIds: z.array(z.string().uuid()).default([]),
   avatarColor: z.string().max(20).nullish(),
+  permissions: z.array(z.string().max(60)).max(20).default([]),
 });
 
 export type AgentInput = z.infer<typeof agentSchema>;

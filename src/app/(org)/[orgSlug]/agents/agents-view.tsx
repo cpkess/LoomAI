@@ -35,7 +35,16 @@ export interface AgentRow {
   reportsToUserId: string | null;
   workspaceIds: string[];
   collectionIds: string[];
+  permissions: string[];
 }
+
+const PERMISSION_OPTIONS = [
+  { key: "hire_employee", label: "Hire AI employees" },
+  { key: "update_employee", label: "Edit AI employees" },
+  { key: "offboard_employee", label: "Offboard AI employees" },
+  { key: "create_department", label: "Create departments" },
+  { key: "assign_to_department", label: "Change staffing" },
+];
 
 interface Option {
   id: string;
@@ -220,6 +229,7 @@ function AgentDialog({
   );
   const [workspaceIds, setWorkspaceIds] = useState<string[]>(agent?.workspaceIds ?? []);
   const [collectionIds, setCollectionIds] = useState<string[]>(agent?.collectionIds ?? []);
+  const [permissions, setPermissions] = useState<string[]>(agent?.permissions ?? []);
   const [pending, setPending] = useState(false);
 
   function toggle(list: string[], setList: (v: string[]) => void, id: string) {
@@ -239,6 +249,7 @@ function AgentDialog({
       reportsToAgentId: manager.startsWith("agent:") ? manager.slice(6) : null,
       workspaceIds,
       collectionIds,
+      permissions,
     };
     const res = await fetch(agent ? `/api/orgs/${orgSlug}/agents/${agent.id}` : `/api/orgs/${orgSlug}/agents`, {
       method: agent ? "PATCH" : "POST",
@@ -368,6 +379,30 @@ function AgentDialog({
                 </label>
               ))}
               {departments.length === 0 && <p className="text-xs text-muted-foreground">No departments yet.</p>}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label>Company permissions</Label>
+            <p className="text-xs text-muted-foreground">
+              What this employee may do to the company itself. Whether an action runs autonomously or needs Board
+              approval is set in Settings → Governance.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {PERMISSION_OPTIONS.map((option) => (
+                <label
+                  key={option.key}
+                  className="flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-sm has-checked:border-primary has-checked:bg-accent"
+                >
+                  <input
+                    type="checkbox"
+                    className="accent-primary"
+                    checked={permissions.includes(option.key)}
+                    onChange={() => toggle(permissions, setPermissions, option.key)}
+                  />
+                  {option.label}
+                </label>
+              ))}
             </div>
           </div>
 

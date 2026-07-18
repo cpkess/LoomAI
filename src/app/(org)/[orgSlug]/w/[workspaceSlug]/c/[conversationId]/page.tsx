@@ -43,6 +43,7 @@ export default async function ConversationPage({
         role: m.role,
         content: m.content,
         sources: m.sources ?? undefined,
+        actions: m.actions ?? undefined,
       }))}
     />
   );

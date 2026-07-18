@@ -6,3 +6,4 @@ export * from "./knowledge";
 export * from "./agents";
 export * from "./chat";
 export * from "./tools";
+export * from "./governance";

@@ -7,6 +7,7 @@ LoomAI turns an organization into a hybrid human + AI company. Alongside your hu
 ## Features
 
 - **AI corporation model** — AI employees with job titles, reporting lines (to humans or other agents), and department staffing; a live org chart of humans and AI side by side.
+- **Agent permissions & Board governance** — AI employees can be granted real authority over the company: hiring, editing, and offboarding AI employees, creating departments, and changing staffing, exercised via tool calls in chat ("hire a QA engineer" actually hires one). Per action type, org Settings decide whether it runs **autonomously** or **requires Board approval** (organization admins are the Board). Gated proposals land in the **Board room**; approving one executes the stored plan immediately, and every action — autonomous or approved — is written to the audit log. Defaults are safe (structural changes need the Board) and tunable toward full day-to-day autonomy.
 - **Hierarchical delegation** — hand a task to any AI employee from the Tasks page. Managers decompose it into subtasks (JSON plan), route each to the best-suited direct report, workers execute with their own persona/model/knowledge, and the manager aggregates the final deliverable. Agents without reports (or with an unparseable plan) complete tasks solo, so weaker local models degrade gracefully. Every step is persisted (`agent_tasks`) and streamed to the UI.
 - **Local-first providers** — LM Studio (native `/api/v0` catalog, health, auto-discovery of local servers), Ollama, Anthropic, and any OpenAI-compatible endpoint (OpenAI, OpenRouter, Azure, vLLM…). Providers are plugins behind one interface: switching engines never touches app code.
 - **Multi-tenant** — organizations are fully isolated; roles are platform admin → org admin → workspace manager → member, enforced by a central `authorize()` layer.
@@ -53,6 +54,7 @@ The same `docker compose up -d --build` is the production deployment: the app co
 ```
 src/lib/ai         provider plugins (lmstudio, ollama, anthropic, openai-compatible) + registry
 src/lib/agents     AI-employee resolution (persona+model+knowledge → chat config), org chart, validation
+src/lib/company    company actions (hire/offboard/departments/staffing), governance policy, Board approval flow
 src/lib/rag        parse → chunk → embed → pgvector retrieve, in-process ingestion queue
 src/lib/auth       Auth.js credentials behind an AuthBackend interface (LDAP/OIDC pluggable), authorize()
 src/lib/db         Drizzle schema + migrations (Postgres + pgvector)

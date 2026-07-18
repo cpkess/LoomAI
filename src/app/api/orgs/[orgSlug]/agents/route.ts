@@ -28,6 +28,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
         reportsToAgentId: data.reportsToAgentId ?? null,
         reportsToUserId: data.reportsToUserId ?? null,
         avatarColor: data.avatarColor ?? AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
+        permissions: data.permissions,
       })
       .returning();
 

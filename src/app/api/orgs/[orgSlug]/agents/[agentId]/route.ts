@@ -33,6 +33,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ orgSlu
       title: data.title ?? existing.title,
       workspaceIds: data.workspaceIds ?? [],
       collectionIds: data.collectionIds ?? [],
+      permissions: data.permissions ?? [],
     });
     if (problem) return Response.json({ error: problem }, { status: 400 });
 
@@ -60,6 +61,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ orgSlu
           ? { reportsToAgentId: data.reportsToAgentId ?? null, reportsToUserId: data.reportsToUserId ?? null }
           : {}),
         ...(data.avatarColor !== undefined ? { avatarColor: data.avatarColor } : {}),
+        ...(data.permissions !== undefined ? { permissions: data.permissions } : {}),
         updatedAt: new Date(),
       })
       .where(eq(agents.id, agentId))

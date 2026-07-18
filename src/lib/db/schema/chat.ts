@@ -34,6 +34,12 @@ export interface MessageSource {
   snippet: string;
 }
 
+export interface MessageAction {
+  type: string;
+  status: "executed" | "pending_approval" | "failed";
+  summary: string;
+}
+
 export const messages = pgTable(
   "messages",
   {
@@ -44,6 +50,8 @@ export const messages = pgTable(
     role: messageRole("role").notNull(),
     content: text("content").notNull(),
     sources: jsonb("sources").$type<MessageSource[]>(),
+    // Company actions taken (or proposed) during this assistant turn
+    actions: jsonb("actions").$type<MessageAction[]>(),
     inputTokens: integer("input_tokens"),
     outputTokens: integer("output_tokens"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

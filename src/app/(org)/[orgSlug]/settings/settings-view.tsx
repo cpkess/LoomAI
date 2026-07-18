@@ -29,16 +29,26 @@ interface DepartmentItem {
 
 const NONE = "__none__";
 
+const GOVERNANCE_LABELS: Record<string, string> = {
+  hire_employee: "Hire AI employees",
+  update_employee: "Edit AI employees (title, persona, manager, pause)",
+  offboard_employee: "Offboard AI employees",
+  create_department: "Create departments",
+  assign_to_department: "Change department staffing",
+};
+
 export function SettingsView({
   orgSlug,
   orgName,
   departments,
   models,
+  governance,
 }: {
   orgSlug: string;
   orgName: string;
   departments: DepartmentItem[];
   models: { id: string; label: string }[];
+  governance: Record<string, "auto" | "board">;
 }) {
   const router = useRouter();
   const [creating, setCreating] = useState(false);
@@ -120,6 +130,47 @@ export function SettingsView({
                   <Trash2 className="size-4" />
                 </Button>
               </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Governance</CardTitle>
+          <CardDescription>
+            Decide which company actions AI employees can take autonomously and which need Board approval
+            (organization admins are the Board). Approved proposals execute automatically.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {Object.entries(GOVERNANCE_LABELS).map(([type, label]) => (
+            <div key={type} className="flex items-center justify-between gap-3 rounded-md border p-3">
+              <div className="text-sm font-medium">{label}</div>
+              <Select
+                value={governance[type] ?? "board"}
+                onValueChange={async (mode) => {
+                  const res = await fetch(`/api/orgs/${orgSlug}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ governance: { [type]: mode } }),
+                  });
+                  if (!res.ok) {
+                    toast.error("Could not update governance policy");
+                    return;
+                  }
+                  toast.success("Governance policy updated");
+                  router.refresh();
+                }}
+              >
+                <SelectTrigger className="w-56">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Autonomous</SelectItem>
+                  <SelectItem value="board">Requires Board approval</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           ))}
         </CardContent>

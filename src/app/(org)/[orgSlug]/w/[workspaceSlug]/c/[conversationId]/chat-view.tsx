@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { ArrowUp, CircleAlert, FileText, Square, User } from "lucide-react";
+import { ArrowUp, CircleAlert, FileText, Square, User, Wrench } from "lucide-react";
 
-import type { MessageSource } from "@/lib/db/schema";
+import type { MessageAction, MessageSource } from "@/lib/db/schema";
 import { cn } from "@/lib/utils";
 import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { Button } from "@/components/ui/button";
@@ -17,9 +17,10 @@ interface InitialMessage {
   role: "system" | "user" | "assistant";
   content: string;
   sources?: MessageSource[];
+  actions?: MessageAction[];
 }
 
-type ChatMessage = UIMessage<{ sources?: MessageSource[] }>;
+type ChatMessage = UIMessage<{ sources?: MessageSource[]; actions?: MessageAction[] }>;
 
 function toUIMessages(initial: InitialMessage[]): ChatMessage[] {
   return initial
@@ -28,7 +29,7 @@ function toUIMessages(initial: InitialMessage[]): ChatMessage[] {
       id: m.id,
       role: m.role as "user" | "assistant",
       parts: [{ type: "text" as const, text: m.content }],
-      metadata: m.sources ? { sources: m.sources } : undefined,
+      metadata: m.sources || m.actions ? { sources: m.sources, actions: m.actions } : undefined,
     }));
 }
 
@@ -155,6 +156,11 @@ function MessageBubble({
     .map((p) => p.text)
     .join("");
   const sources = message.metadata?.sources;
+  const actions = message.metadata?.actions;
+  // Live tool activity while the agent is working (before metadata arrives)
+  const liveTools = message.parts
+    .filter((p) => typeof p.type === "string" && (p.type.startsWith("tool-") || p.type === "dynamic-tool"))
+    .map((p) => p as unknown as { type: string; state?: string; toolName?: string });
 
   return (
     <div className={cn("flex gap-3", isUser && "flex-row-reverse")}>
@@ -170,14 +176,57 @@ function MessageBubble({
         </div>
       )}
       <div className={cn("flex min-w-0 max-w-[85%] flex-col gap-2", isUser && "items-end")}>
-        <div
-          className={cn(
-            "rounded-lg px-3 py-2 text-sm",
-            isUser ? "bg-primary text-primary-foreground" : "bg-muted/60"
-          )}
-        >
-          {isUser ? <p className="whitespace-pre-wrap">{text}</p> : <Markdown>{text}</Markdown>}
-        </div>
+        {!isUser && liveTools.length > 0 && !actions && (
+          <div className="flex flex-wrap gap-1">
+            {liveTools.map((part, i) => {
+              const name = part.type === "dynamic-tool" ? (part.toolName ?? "tool") : part.type.slice(5);
+              const done = part.state === "output-available";
+              return (
+                <span
+                  key={i}
+                  className="inline-flex items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-xs text-muted-foreground"
+                >
+                  <Wrench className="size-3" />
+                  {name}
+                  {!done && <span className="animate-pulse">…</span>}
+                </span>
+              );
+            })}
+          </div>
+        )}
+        {(text || liveTools.length === 0) && (
+          <div
+            className={cn(
+              "rounded-lg px-3 py-2 text-sm",
+              isUser ? "bg-primary text-primary-foreground" : "bg-muted/60"
+            )}
+          >
+            {isUser ? <p className="whitespace-pre-wrap">{text}</p> : <Markdown>{text}</Markdown>}
+          </div>
+        )}
+        {actions && actions.length > 0 && (
+          <div className="flex flex-col gap-1">
+            {actions.map((action, i) => (
+              <span
+                key={i}
+                className={cn(
+                  "inline-flex w-fit items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+                  action.status === "executed" && "border-success/40 bg-success/10 text-success",
+                  action.status === "pending_approval" && "border-warning/40 bg-warning/10 text-warning",
+                  action.status === "failed" && "border-destructive/40 bg-destructive/10 text-destructive"
+                )}
+              >
+                <Wrench className="size-3" />
+                {action.summary} —{" "}
+                {action.status === "executed"
+                  ? "executed"
+                  : action.status === "pending_approval"
+                    ? "awaiting Board approval"
+                    : "failed"}
+              </span>
+            ))}
+          </div>
+        )}
         {sources && sources.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {sources.map((source, i) => (

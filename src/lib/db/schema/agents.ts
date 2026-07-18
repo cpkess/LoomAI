@@ -24,6 +24,9 @@ export const agents = pgTable("agents", {
   personaText: text("persona_text"),
   reportsToAgentId: uuid("reports_to_agent_id"),
   reportsToUserId: uuid("reports_to_user_id").references(() => users.id, { onDelete: "set null" }),
+  // Granted company-action keys (see lib/company/actions.ts), e.g.
+  // ["hire_employee", "create_department"]. Empty = chat/tasks only.
+  permissions: jsonb("permissions").$type<string[]>().notNull().default([]),
   config: jsonb("config").notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

@@ -69,6 +69,7 @@ export default async function AgentsPage({ params }: { params: Promise<{ orgSlug
           reportsToUserId: a.reportsToUserId,
           workspaceIds: workspaceLinks.filter((l) => l.agentId === a.id).map((l) => l.workspaceId),
           collectionIds: collectionLinks.filter((l) => l.agentId === a.id).map((l) => l.collectionId),
+          permissions: a.permissions ?? [],
         }))}
         departments={departments.map((d) => ({ id: d.id, name: d.name }))}
         collections={orgCollections.map((c) => ({ id: c.id, name: c.name }))}
