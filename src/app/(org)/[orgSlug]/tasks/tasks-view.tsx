@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Loader2, Plus } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Loader2, Plus, Send } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -30,6 +30,14 @@ interface TaskAgent {
   avatarColor: string | null;
 }
 
+interface TaskUpdateItem {
+  id: string;
+  kind: "result" | "feedback";
+  content: string;
+  author: string | null;
+  createdAt: string;
+}
+
 interface TaskItem {
   id: string;
   title: string;
@@ -39,6 +47,7 @@ interface TaskItem {
   error: string | null;
   agent: TaskAgent | null;
   subtasks?: TaskItem[];
+  updates?: TaskUpdateItem[];
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -129,7 +138,7 @@ export function TasksView({ orgSlug, agents }: { orgSlug: string; agents: TaskAg
       ) : (
         <div className="flex flex-col gap-3">
           {tasks.map((task) => (
-            <TaskCard key={task.id} task={task} />
+            <TaskCard key={task.id} task={task} orgSlug={orgSlug} onChanged={() => void load()} />
           ))}
         </div>
       )}
@@ -148,9 +157,37 @@ export function TasksView({ orgSlug, agents }: { orgSlug: string; agents: TaskAg
   );
 }
 
-function TaskCard({ task }: { task: TaskItem }) {
+function TaskCard({ task, orgSlug, onChanged }: { task: TaskItem; orgSlug: string; onChanged: () => void }) {
   const [open, setOpen] = useState(false);
-  const hasDetail = Boolean(task.result || task.error || (task.subtasks && task.subtasks.length > 0));
+  const [feedback, setFeedback] = useState("");
+  const [sending, setSending] = useState(false);
+  const hasDetail = Boolean(
+    task.result || task.error || (task.subtasks && task.subtasks.length > 0) || (task.updates && task.updates.length > 0)
+  );
+  const finished = task.status === "completed" || task.status === "failed";
+  // The latest result already renders as the Deliverable — the history shows
+  // everything else (feedback rounds and superseded results).
+  const history = (task.updates ?? []).filter((u) => !(u.kind === "result" && u.content === task.result));
+
+  async function sendFeedback() {
+    const message = feedback.trim();
+    if (!message) return;
+    setSending(true);
+    const res = await fetch(`/api/orgs/${orgSlug}/tasks/${task.id}/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+    const body = await res.json().catch(() => ({}));
+    setSending(false);
+    if (!res.ok) {
+      toast.error(body.error ?? "Could not send feedback");
+      return;
+    }
+    setFeedback("");
+    toast.success(`Feedback sent — ${task.agent?.name ?? "the coordinator"} is back on it`);
+    onChanged();
+  }
 
   return (
     <Card className="py-4">
@@ -182,7 +219,7 @@ function TaskCard({ task }: { task: TaskItem }) {
         </button>
 
         {open && (
-          <div className="flex flex-col gap-3 border-t pt-3">
+          <div className="flex min-w-0 flex-col gap-3 overflow-hidden border-t pt-3">
             {task.subtasks && task.subtasks.length > 0 && (
               <div className="flex flex-col gap-2">
                 <div className="text-xs font-medium text-muted-foreground">
@@ -193,15 +230,63 @@ function TaskCard({ task }: { task: TaskItem }) {
                 ))}
               </div>
             )}
+            {history.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <div className="text-xs font-medium text-muted-foreground">History</div>
+                {history.map((update) => (
+                  <div
+                    key={update.id}
+                    className={cn(
+                      "min-w-0 overflow-hidden rounded-md border p-3 text-sm",
+                      update.kind === "feedback" ? "border-primary/30 bg-primary/5" : "bg-muted/20"
+                    )}
+                  >
+                    <div className="pb-1 text-xs font-medium text-muted-foreground">
+                      {update.kind === "feedback"
+                        ? `Feedback from ${update.author ?? "the Board"}`
+                        : "Earlier result"}{" "}
+                      · {new Date(update.createdAt).toLocaleString()}
+                    </div>
+                    {update.kind === "feedback" ? (
+                      <p className="whitespace-pre-wrap break-words">{update.content}</p>
+                    ) : (
+                      <Markdown>{update.content}</Markdown>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             {task.error && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+              <div className="break-words rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
                 {task.error}
               </div>
             )}
             {task.result && (
-              <div className="rounded-md border bg-muted/30 p-3 text-sm">
+              <div className="min-w-0 overflow-hidden rounded-md border bg-muted/30 p-3 text-sm">
                 <div className="pb-2 text-xs font-medium text-muted-foreground">Deliverable</div>
                 <Markdown>{task.result}</Markdown>
+              </div>
+            )}
+            {finished && (
+              <div className="flex flex-col gap-2">
+                <div className="text-xs font-medium text-muted-foreground">
+                  Follow up with {task.agent?.name ?? "the coordinator"}
+                </div>
+                <Textarea
+                  value={feedback}
+                  onChange={(e) => setFeedback(e.target.value)}
+                  rows={2}
+                  placeholder='e.g. "This only described the hire — actually hire them now."'
+                />
+                <Button
+                  size="sm"
+                  className="self-start"
+                  disabled={sending || !feedback.trim()}
+                  onClick={() => void sendFeedback()}
+                >
+                  <Send />
+                  {sending ? "Sending…" : "Send feedback & continue"}
+                </Button>
               </div>
             )}
           </div>
@@ -224,9 +309,9 @@ function SubtaskRow({ subtask }: { subtask: TaskItem }) {
         <StatusBadge status={subtask.status} />
       </button>
       {open && (subtask.result || subtask.error || subtask.description) && (
-        <div className="flex flex-col gap-2 border-t px-3 py-2 text-sm">
-          {subtask.description && <p className="text-xs text-muted-foreground">{subtask.description}</p>}
-          {subtask.error && <p className="text-destructive">{subtask.error}</p>}
+        <div className="flex min-w-0 flex-col gap-2 overflow-hidden border-t px-3 py-2 text-sm">
+          {subtask.description && <p className="break-words text-xs text-muted-foreground">{subtask.description}</p>}
+          {subtask.error && <p className="break-words text-destructive">{subtask.error}</p>}
           {subtask.result && <Markdown>{subtask.result}</Markdown>}
         </div>
       )}

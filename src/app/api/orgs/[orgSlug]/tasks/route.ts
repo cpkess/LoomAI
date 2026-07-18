@@ -1,10 +1,10 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { enqueueTask } from "@/lib/agents/engine";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
-import { agentTaskAssignments, agentTasks, agents } from "@/lib/db/schema";
+import { agentTaskAssignments, agentTaskUpdates, agentTasks, agents, users } from "@/lib/db/schema";
 
 const createSchema = z.object({
   title: z.string().min(1).max(200),
@@ -69,6 +69,17 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
     const assignments = allIds.length
       ? await db.query.agentTaskAssignments.findMany({ where: inArray(agentTaskAssignments.taskId, allIds) })
       : [];
+    const updates = rootIds.length
+      ? await db.query.agentTaskUpdates.findMany({
+          where: inArray(agentTaskUpdates.taskId, rootIds),
+          orderBy: asc(agentTaskUpdates.createdAt),
+        })
+      : [];
+    const updateAuthorIds = [...new Set(updates.map((u) => u.authorUserId).filter((x): x is string => Boolean(x)))];
+    const updateAuthors = updateAuthorIds.length
+      ? await db.query.users.findMany({ where: inArray(users.id, updateAuthorIds) })
+      : [];
+    const authorsById = new Map(updateAuthors.map((u) => [u.id, u.name]));
     const agentIds = [...new Set(assignments.map((a) => a.agentId))];
     const taskAgents = agentIds.length
       ? await db.query.agents.findMany({ where: inArray(agents.id, agentIds) })
@@ -96,6 +107,15 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
       tasks: roots.map((root) => ({
         ...serialize(root),
         subtasks: children.filter((c) => c.parentTaskId === root.id).map(serialize),
+        updates: updates
+          .filter((u) => u.taskId === root.id)
+          .map((u) => ({
+            id: u.id,
+            kind: u.kind,
+            content: u.content,
+            author: u.authorUserId ? (authorsById.get(u.authorUserId) ?? "Unknown") : null,
+            createdAt: u.createdAt,
+          })),
       })),
     });
   } catch (err) {

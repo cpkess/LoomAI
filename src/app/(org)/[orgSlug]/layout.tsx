@@ -126,7 +126,7 @@ export default async function OrgLayout({
           <UserMenu name={ctx.user.name} email={ctx.user.email} isPlatformAdmin={ctx.user.isPlatformAdmin} />
         </div>
       </aside>
-      <main className="ml-60 flex-1">{children}</main>
+      <main className="ml-60 min-w-0 flex-1 overflow-x-hidden">{children}</main>
     </div>
   );
 }

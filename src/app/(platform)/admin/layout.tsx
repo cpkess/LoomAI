@@ -52,7 +52,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <UserMenu name={user.name} email={user.email} isPlatformAdmin={user.isPlatformAdmin} />
         </div>
       </aside>
-      <main className="ml-60 flex-1">{children}</main>
+      <main className="ml-60 min-w-0 flex-1 overflow-x-hidden">{children}</main>
     </div>
   );
 }

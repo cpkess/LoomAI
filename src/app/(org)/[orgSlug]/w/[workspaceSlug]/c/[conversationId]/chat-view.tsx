@@ -197,11 +197,11 @@ function MessageBubble({
         {(text || liveTools.length === 0) && (
           <div
             className={cn(
-              "rounded-lg px-3 py-2 text-sm",
+              "min-w-0 max-w-full overflow-hidden rounded-lg px-3 py-2 text-sm",
               isUser ? "bg-primary text-primary-foreground" : "bg-muted/60"
             )}
           >
-            {isUser ? <p className="whitespace-pre-wrap">{text}</p> : <Markdown>{text}</Markdown>}
+            {isUser ? <p className="whitespace-pre-wrap break-words">{text}</p> : <Markdown>{text}</Markdown>}
           </div>
         )}
         {actions && actions.length > 0 && (
