@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { Button } from "@/components/ui/button";
 import { Markdown } from "@/components/chat/markdown";
+import { OutputActions } from "@/components/output/output-actions";
 import { Textarea } from "@/components/ui/textarea";
 
 interface InitialMessage {
@@ -93,8 +94,13 @@ export function ChatView({
                 : "Send a message to get started."}
             </div>
           )}
-          {messages.map((message) => (
-            <MessageBubble key={message.id} message={message} agent={agent} />
+          {messages.map((message, i) => (
+            <MessageBubble
+              key={message.id}
+              message={message}
+              agent={agent}
+              streaming={status === "streaming" && i === messages.length - 1}
+            />
           ))}
           {status === "submitted" && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -146,9 +152,11 @@ export function ChatView({
 function MessageBubble({
   message,
   agent,
+  streaming,
 }: {
   message: ChatMessage;
   agent: { name: string; title: string; avatarColor: string | null } | null;
+  streaming?: boolean;
 }) {
   const isUser = message.role === "user";
   const text = message.parts
@@ -240,6 +248,12 @@ function MessageBubble({
               </span>
             ))}
           </div>
+        )}
+        {!isUser && !streaming && text.trim() && (
+          <OutputActions
+            text={text}
+            defaultTitle={agent ? `${agent.name} — output` : "Assistant output"}
+          />
         )}
       </div>
     </div>

@@ -50,3 +50,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
     return errorResponse(err);
   }
 }
+
+export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug: string }> }) {
+  try {
+    const { orgSlug } = await params;
+    const ctx = await requireOrg(orgSlug, "member");
+    const rows = await db.query.collections.findMany({
+      where: eq(collections.organizationId, ctx.org.id),
+      orderBy: (t, { asc }) => asc(t.name),
+    });
+    return Response.json({ collections: rows.map((c) => ({ id: c.id, name: c.name })) });
+  } catch (err) {
+    return errorResponse(err);
+  }
+}

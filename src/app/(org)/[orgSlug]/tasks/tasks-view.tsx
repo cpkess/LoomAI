@@ -22,6 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Markdown } from "@/components/chat/markdown";
+import { OutputActions } from "@/components/output/output-actions";
 
 interface TaskAgent {
   id: string;
@@ -265,6 +266,9 @@ function TaskCard({ task, orgSlug, onChanged }: { task: TaskItem; orgSlug: strin
                       ) : (
                         <Markdown>{update.content}</Markdown>
                       )}
+                      {(update.kind === "result" || update.kind === "subtask_result") && (
+                        <OutputActions text={update.content} defaultTitle={task.title} className="pt-1" />
+                      )}
                     </div>
                   );
                 })}
@@ -277,7 +281,10 @@ function TaskCard({ task, orgSlug, onChanged }: { task: TaskItem; orgSlug: strin
             )}
             {task.result && (
               <div className="min-w-0 overflow-hidden rounded-md border bg-muted/30 p-3 text-sm">
-                <div className="pb-2 text-xs font-medium text-muted-foreground">Deliverable</div>
+                <div className="flex items-center justify-between gap-2 pb-2">
+                  <span className="text-xs font-medium text-muted-foreground">Deliverable</span>
+                  <OutputActions text={task.result} defaultTitle={task.title} />
+                </div>
                 <Markdown>{task.result}</Markdown>
               </div>
             )}
@@ -327,6 +334,7 @@ function SubtaskRow({ subtask }: { subtask: TaskItem }) {
           {subtask.description && <p className="break-words text-xs text-muted-foreground">{subtask.description}</p>}
           {subtask.error && <p className="break-words text-destructive">{subtask.error}</p>}
           {subtask.result && <Markdown>{subtask.result}</Markdown>}
+          {subtask.result && <OutputActions text={subtask.result} defaultTitle={subtask.title} className="pt-1" />}
         </div>
       )}
     </div>
