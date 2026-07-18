@@ -32,11 +32,18 @@ interface TaskAgent {
 
 interface TaskUpdateItem {
   id: string;
-  kind: "result" | "feedback";
+  kind: "result" | "feedback" | "plan" | "subtask_result" | "validation";
   content: string;
   author: string | null;
   createdAt: string;
 }
+
+const UPDATE_LABELS: Record<string, string> = {
+  result: "Earlier result",
+  plan: "Delegation plan",
+  subtask_result: "Subtask result",
+  validation: "Goal validation",
+};
 
 interface TaskItem {
   id: string;
@@ -233,27 +240,34 @@ function TaskCard({ task, orgSlug, onChanged }: { task: TaskItem; orgSlug: strin
             {history.length > 0 && (
               <div className="flex flex-col gap-2">
                 <div className="text-xs font-medium text-muted-foreground">History</div>
-                {history.map((update) => (
-                  <div
-                    key={update.id}
-                    className={cn(
-                      "min-w-0 overflow-hidden rounded-md border p-3 text-sm",
-                      update.kind === "feedback" ? "border-primary/30 bg-primary/5" : "bg-muted/20"
-                    )}
-                  >
-                    <div className="pb-1 text-xs font-medium text-muted-foreground">
-                      {update.kind === "feedback"
-                        ? `Feedback from ${update.author ?? "the Board"}`
-                        : "Earlier result"}{" "}
-                      · {new Date(update.createdAt).toLocaleString()}
+                {history.map((update) => {
+                  const validationFailed = update.kind === "validation" && update.content.startsWith("FAILED");
+                  const validationPassed = update.kind === "validation" && update.content.startsWith("PASSED");
+                  return (
+                    <div
+                      key={update.id}
+                      className={cn(
+                        "min-w-0 overflow-hidden rounded-md border p-3 text-sm",
+                        update.kind === "feedback" && "border-primary/30 bg-primary/5",
+                        validationFailed && "border-destructive/30 bg-destructive/5",
+                        validationPassed && "border-success/30 bg-success/5",
+                        update.kind !== "feedback" && update.kind !== "validation" && "bg-muted/20"
+                      )}
+                    >
+                      <div className="pb-1 text-xs font-medium text-muted-foreground">
+                        {update.kind === "feedback"
+                          ? `Feedback from ${update.author ?? "the requester"}`
+                          : (UPDATE_LABELS[update.kind] ?? "Update")}{" "}
+                        · {new Date(update.createdAt).toLocaleString()}
+                      </div>
+                      {update.kind === "feedback" ? (
+                        <p className="whitespace-pre-wrap break-words">{update.content}</p>
+                      ) : (
+                        <Markdown>{update.content}</Markdown>
+                      )}
                     </div>
-                    {update.kind === "feedback" ? (
-                      <p className="whitespace-pre-wrap break-words">{update.content}</p>
-                    ) : (
-                      <Markdown>{update.content}</Markdown>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             {task.error && (

@@ -29,9 +29,15 @@ import { fallbackModelId, resolveAgentRuntime } from "./resolve";
 //      coordinator then aggregates the results into the final deliverable.
 //   3. An agent with no reports (or a plan that fails to parse) completes
 //      the task solo.
+//   4. Every deliverable passes a validation hook that checks the ORIGINAL
+//      goal was actually achieved; if not, the task fails cleanly with a
+//      reason (an acceptable outcome) instead of reporting false success.
 //
-// Runs in-process like the ingestion queue; every state transition is
-// persisted so the Tasks UI can poll live progress.
+// A single per-task activity log (plan, subtask results, deliverables,
+// feedback, validation verdicts) is the shared memory every agent reads
+// before working, so context is never lost across the team or across
+// feedback rounds. Runs in-process like the ingestion queue; every state
+// transition is persisted so the Tasks UI can poll live progress.
 
 const MAX_SUBTASKS = 5;
 
@@ -126,8 +132,101 @@ function actionsBlock(actions: MessageAction[]): string {
   return `\n\n**Actions taken:**\n${lines.join("\n")}`;
 }
 
-async function recordResult(taskId: string, content: string): Promise<void> {
-  await db.insert(agentTaskUpdates).values({ taskId, kind: "result", content });
+// The task log is the shared memory of a task. Every meaningful step —
+// delegation plan, subtask results, aggregated deliverables, human feedback,
+// and validation verdicts — is appended here so no agent working the task
+// ever loses context.
+type UpdateKind = "result" | "feedback" | "plan" | "subtask_result" | "validation";
+
+const UPDATE_LABELS: Record<UpdateKind, string> = {
+  result: "Result",
+  feedback: "Feedback from the requester",
+  plan: "Delegation plan",
+  subtask_result: "Subtask result",
+  validation: "Goal validation",
+};
+
+async function recordUpdate(taskId: string, kind: UpdateKind, content: string): Promise<void> {
+  await db.insert(agentTaskUpdates).values({ taskId, kind, content });
+}
+
+/** Full ordered activity log for a task, formatted for an agent to read. */
+async function taskLog(taskId: string): Promise<string> {
+  const updates = await db.query.agentTaskUpdates.findMany({
+    where: eq(agentTaskUpdates.taskId, taskId),
+    orderBy: asc(agentTaskUpdates.createdAt),
+  });
+  if (updates.length === 0) return "(no prior activity)";
+  return updates
+    .map((u) => `[${UPDATE_LABELS[u.kind as UpdateKind] ?? u.kind}]\n${u.content}`)
+    .join("\n\n---\n\n");
+}
+
+const validationSchema = z.object({ achieved: z.boolean(), reason: z.string().min(1) });
+
+/**
+ * Validation hook: after a deliverable is produced, critically check that the
+ * ORIGINAL goal was actually achieved — not merely described or planned. A
+ * clean failure (missing data, blocked, only described) is an acceptable,
+ * intended outcome. The coordinator performs the check with a critical
+ * framing and no tools (read-only judgment); an unparseable verdict from a
+ * weak model does not false-fail the task.
+ */
+async function validateGoal(
+  coordinator: Agent,
+  org: Organization,
+  task: { id: string; title: string; description: string | null },
+  deliverable: string
+): Promise<{ achieved: boolean; reason: string }> {
+  const prompt = [
+    "You are validating whether a company task actually achieved its original goal.",
+    "",
+    `Original goal:\nTask: ${task.title}${task.description ? `\n${task.description}` : ""}`,
+    "",
+    "Full activity log for this task:",
+    await taskLog(task.id),
+    "",
+    "Proposed final deliverable:",
+    deliverable,
+    "",
+    "Verify critically. If the goal required a company action (e.g. hiring, creating a department), confirm it was ACTUALLY executed — look for an 'Actions taken' section showing 'executed' or 'awaiting Board approval'. Work that only describes or plans the action, or is blocked by missing data, has NOT achieved the goal.",
+    "It is correct and acceptable to report failure when the goal was not achieved — do not pretend success.",
+    "Treat an action that is correctly 'awaiting Board approval' as achieved (the goal is properly in motion).",
+    'Respond with JSON only: {"achieved": true|false, "reason": "one concise sentence"}',
+  ].join("\n");
+
+  const text = await agentReply(coordinator, org, prompt);
+  const parsed = validationSchema.safeParse(extractJson(text));
+  if (!parsed.success) {
+    return { achieved: true, reason: "Validation inconclusive (verdict could not be parsed); accepted as complete." };
+  }
+  return parsed.data;
+}
+
+/**
+ * Record the deliverable, run the validation hook, and set the terminal
+ * status: completed when the goal was achieved, failed (with the reason) when
+ * it was not. The deliverable is kept either way so the requester can review
+ * it and follow up with feedback.
+ */
+async function finalize(
+  taskId: string,
+  coordinator: Agent,
+  org: Organization,
+  task: { id: string; title: string; description: string | null },
+  deliverable: string
+): Promise<void> {
+  await setTask(taskId, { result: deliverable });
+  await recordUpdate(taskId, "result", deliverable);
+
+  const verdict = await validateGoal(coordinator, org, task, deliverable);
+  await recordUpdate(taskId, "validation", `${verdict.achieved ? "PASSED" : "FAILED"} — ${verdict.reason}`);
+
+  if (verdict.achieved) {
+    await setTask(taskId, { status: "completed", error: null });
+  } else {
+    await setTask(taskId, { status: "failed", error: verdict.reason });
+  }
 }
 
 const planSchema = z.object({
@@ -177,8 +276,7 @@ async function runTask(taskId: string): Promise<void> {
         `${taskText}\n\nComplete this task and deliver the result. If it calls for company actions you have tools for, perform them — do not merely describe them.`,
         { withTools: true, actions }
       )) + actionsBlock(actions);
-    await setTask(taskId, { status: "completed", result });
-    await recordResult(taskId, result);
+    await finalize(taskId, coordinator, org, task, result);
     return;
   }
 
@@ -216,12 +314,20 @@ async function runTask(taskId: string): Promise<void> {
         `${taskText}\n\nComplete this task and deliver the result. If it calls for company actions you have tools for, perform them — do not merely describe them.`,
         { withTools: true, actions }
       )) + actionsBlock(actions);
-    await setTask(taskId, { status: "completed", result });
-    await recordResult(taskId, result);
+    await finalize(taskId, coordinator, org, task, result);
     return;
   }
 
-  // 2. Create child tasks and run each worker.
+  // Record the plan so workers (and later readers) see how the task was split.
+  await recordUpdate(
+    task.id,
+    "plan",
+    plan.map((s) => `- ${s.title} → ${reportsById.get(s.assignee)!.name}\n  ${s.description}`).join("\n")
+  );
+
+  // 2. Create child tasks and run each worker. Each worker reads the full
+  //    parent task log (goal, plan, and any sibling results so far) so no
+  //    context is lost across the team.
   const workerResults: { agent: Agent; title: string; result: string }[] = [];
   for (const subtask of plan) {
     const worker = reportsById.get(subtask.assignee)!;
@@ -244,19 +350,33 @@ async function runTask(taskId: string): Promise<void> {
         (await agentReply(
           worker,
           org,
-          `Your manager ${coordinator.name} assigned you this subtask as part of "${task.title}":\n\nSubtask: ${subtask.title}\n${subtask.description}\n\nComplete it and deliver the result. If it calls for company actions you have tools for, perform them — do not merely describe them.`,
+          [
+            `You are working on a subtask of a larger company task led by your manager ${coordinator.name}.`,
+            "",
+            `Overall task: ${task.title}${task.description ? `\n${task.description}` : ""}`,
+            "",
+            "Full activity log for the overall task so far (read it to stay in context):",
+            await taskLog(task.id),
+            "",
+            `Your assigned subtask:\nSubtask: ${subtask.title}\n${subtask.description}`,
+            "",
+            "Complete your subtask and deliver the result. If it calls for company actions you have tools for, perform them — do not merely describe them. If you cannot complete it (e.g. missing data), say so clearly.",
+          ].join("\n"),
           { withTools: true, actions: workerActions }
         )) + actionsBlock(workerActions);
       await setTask(child.id, { status: "completed", result });
+      await recordUpdate(task.id, "subtask_result", `${subtask.title} — by ${worker.name} (${worker.title}):\n${result}`);
       workerResults.push({ agent: worker, title: subtask.title, result });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await setTask(child.id, { status: "failed", error: message });
+      await recordUpdate(task.id, "subtask_result", `${subtask.title} — by ${worker.name}: FAILED — ${message}`);
       workerResults.push({ agent: worker, title: subtask.title, result: `(failed: ${message})` });
     }
   }
 
-  // 3. Coordinator aggregates the workers' output into the deliverable.
+  // 3. Coordinator aggregates the workers' output into the deliverable, with
+  //    the full task log available.
   const aggregationActions: MessageAction[] = [];
   const aggregation =
     (await agentReply(
@@ -265,17 +385,16 @@ async function runTask(taskId: string): Promise<void> {
       [
         taskText,
         "",
-        "Your reports have completed their subtasks:",
-        ...workerResults.map((w) => `\n### ${w.title} — by ${w.agent.name} (${w.agent.title})\n${w.result}`),
+        "Full activity log for this task (plan and every subtask result):",
+        await taskLog(task.id),
         "",
-        "Combine their work into the final deliverable for this task. Resolve conflicts and fill gaps yourself.",
+        "Combine your reports' work into the final deliverable for this task. Resolve conflicts and fill gaps yourself.",
         "If completing the task requires company actions you have tools for and they have not been performed yet, perform them now.",
       ].join("\n"),
       { withTools: true, actions: aggregationActions }
     )) + actionsBlock(aggregationActions);
 
-  await setTask(taskId, { status: "completed", result: aggregation });
-  await recordResult(taskId, aggregation);
+  await finalize(taskId, coordinator, org, task, aggregation);
 }
 
 /**
@@ -299,15 +418,6 @@ async function continueTask(taskId: string): Promise<void> {
 
   await setTask(taskId, { status: "in_progress", error: null });
 
-  const updates = await db.query.agentTaskUpdates.findMany({
-    where: eq(agentTaskUpdates.taskId, taskId),
-    orderBy: asc(agentTaskUpdates.createdAt),
-  });
-
-  const history = updates
-    .map((u) => (u.kind === "feedback" ? `[Feedback from the Board/requester]\n${u.content}` : `[Your previous result]\n${u.content}`))
-    .join("\n\n---\n\n");
-
   const actions: MessageAction[] = [];
   const result =
     (await agentReply(
@@ -316,8 +426,8 @@ async function continueTask(taskId: string): Promise<void> {
       [
         `Task: ${task.title}${task.description ? `\n\n${task.description}` : ""}`,
         "",
-        "History of this task so far:",
-        history || "(no recorded history)",
+        "Full activity log for this task so far (every result, feedback, and validation — read it all so no context is lost):",
+        await taskLog(task.id),
         "",
         "Address the latest feedback and continue the task to completion.",
         "If the feedback asks for company actions you have tools for, perform them now — do not merely describe or promise them.",
@@ -325,6 +435,5 @@ async function continueTask(taskId: string): Promise<void> {
       { withTools: true, actions }
     )) + actionsBlock(actions);
 
-  await setTask(taskId, { status: "completed", result, error: null });
-  await recordResult(taskId, result);
+  await finalize(taskId, coordinator, org, task, result);
 }
