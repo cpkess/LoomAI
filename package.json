@@ -36,6 +36,7 @@
     "next": "15.5.20",
     "next-auth": "^5.0.0-beta.31",
     "pdf-parse": "^2.4.5",
+    "playwright-core": "^1.61.1",
     "postgres": "^3.4.9",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

@@ -79,14 +79,14 @@ try {
       ${org.id}, 'Atlas', 'Principal Engineer (AI)', 'active', ${architectPersona.id},
       ${"You are Atlas, Acme Corp's AI principal engineer. You give precise, pragmatic technical guidance, favor simple designs, and always call out trade-offs and risks explicitly."},
       ${admin.id}, '#6366f1',
-      ${sql.json(["hire_employee", "update_employee", "create_department", "assign_to_department"])}
+      ${sql.json(["web_research", "hire_employee", "update_employee", "create_department", "assign_to_department"])}
     ) RETURNING id`;
   const [nova] = await sql`
-    INSERT INTO agents (organization_id, name, title, status, persona_prompt_id, persona_text, reports_to_agent_id, avatar_color)
+    INSERT INTO agents (organization_id, name, title, status, persona_prompt_id, persona_text, reports_to_agent_id, avatar_color, permissions)
     VALUES (
       ${org.id}, 'Nova', 'Content Strategist (AI)', 'active', ${copywriterPersona.id},
       ${"You are Nova, Acme Corp's AI content strategist. You write clear, punchy, benefit-led copy and adapt tone to the requested audience."},
-      ${atlas.id}, '#ec4899'
+      ${atlas.id}, '#ec4899', ${sql.json(["web_research"])}
     ) RETURNING id`;
 
   await sql`

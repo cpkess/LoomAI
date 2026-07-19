@@ -1,9 +1,9 @@
-import { and, count, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import { BookOpen, Bot, ClipboardList, Gavel, LayoutDashboard, MessagesSquare, Network, ScrollText, Settings, Users } from "lucide-react";
 
 import { requireOrgPage, roleAtLeast } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
-import { orgActions, organizationMembers, organizations, workspaces } from "@/lib/db/schema";
+import { boardEmails, orgActions, organizationMembers, organizations, workspaces } from "@/lib/db/schema";
 import { NavLink } from "@/components/shell/nav-link";
 import { OrgSwitcher } from "@/components/shell/org-switcher";
 import { UserMenu } from "@/components/shell/user-menu";
@@ -37,10 +37,17 @@ export default async function OrgLayout({
     orderBy: (t, { asc }) => asc(t.name),
   });
 
-  const [pendingApprovals] = await db
-    .select({ value: count() })
-    .from(orgActions)
-    .where(and(eq(orgActions.organizationId, ctx.org.id), eq(orgActions.status, "pending_approval")));
+  const [[pendingApprovals], [unreadEmails]] = await Promise.all([
+    db
+      .select({ value: count() })
+      .from(orgActions)
+      .where(and(eq(orgActions.organizationId, ctx.org.id), eq(orgActions.status, "pending_approval"))),
+    db
+      .select({ value: count() })
+      .from(boardEmails)
+      .where(and(eq(boardEmails.organizationId, ctx.org.id), isNull(boardEmails.readAt))),
+  ]);
+  const boardBadge = pendingApprovals.value + unreadEmails.value;
 
   const base = `/${ctx.org.slug}`;
 
@@ -75,9 +82,9 @@ export default async function OrgLayout({
             <NavLink href={`${base}/board`}>
               <Gavel />
               Board room
-              {pendingApprovals.value > 0 && (
+              {boardBadge > 0 && (
                 <span className="ml-auto rounded-full bg-warning/20 px-1.5 text-xs font-semibold text-warning">
-                  {pendingApprovals.value}
+                  {boardBadge}
                 </span>
               )}
             </NavLink>

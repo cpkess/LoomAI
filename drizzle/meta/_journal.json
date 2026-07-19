@@ -29,6 +29,13 @@
       "when": 1784383938685,
       "tag": "0003_task_updates",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784427374195,
+      "tag": "0004_board_emails",
+      "breakpoints": true
     }
   ]
 }

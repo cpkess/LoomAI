@@ -39,6 +39,7 @@ export interface AgentRow {
 }
 
 const PERMISSION_OPTIONS = [
+  { key: "web_research", label: "Web research" },
   { key: "hire_employee", label: "Hire AI employees" },
   { key: "update_employee", label: "Edit AI employees" },
   { key: "offboard_employee", label: "Offboard AI employees" },

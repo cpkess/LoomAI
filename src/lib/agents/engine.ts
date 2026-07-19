@@ -10,6 +10,7 @@ import {
   agentTaskUpdates,
   agentTasks,
   agents,
+  boardEmails,
   organizations,
   type Agent,
   type MessageAction,
@@ -222,11 +223,26 @@ async function finalize(
   const verdict = await validateGoal(coordinator, org, task, deliverable);
   await recordUpdate(taskId, "validation", `${verdict.achieved ? "PASSED" : "FAILED"} — ${verdict.reason}`);
 
+  const outcome = verdict.achieved ? "completed" : "failed";
   if (verdict.achieved) {
     await setTask(taskId, { status: "completed", error: null });
   } else {
     await setTask(taskId, { status: "failed", error: verdict.reason });
   }
+
+  // Email the Board the final output so it lands in the Board room inbox.
+  const statusLine = verdict.achieved
+    ? "✅ Completed — goal achieved."
+    : `⚠️ Could not fully complete — ${verdict.reason}`;
+  await db.insert(boardEmails).values({
+    organizationId: org.id,
+    taskId,
+    fromAgentId: coordinator.id,
+    fromName: `${coordinator.name} (${coordinator.title})`,
+    subject: `${verdict.achieved ? "Task complete" : "Task needs attention"}: ${task.title}`,
+    body: `${statusLine}\n\n${deliverable}`,
+    outcome,
+  });
 }
 
 const planSchema = z.object({

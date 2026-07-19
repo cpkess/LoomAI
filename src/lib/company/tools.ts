@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { db } from "@/lib/db";
 import { agents, workspaces, type Agent, type MessageAction, type Organization } from "@/lib/db/schema";
+import { buildResearchTools, describeResearch } from "@/lib/research/tools";
 
 import { ACTION_TYPES, COMPANY_ACTIONS, getGovernance, performAction, type ActionType } from "./actions";
 
@@ -18,11 +19,15 @@ export interface AgentToolContext {
  * action is granted, so agents can resolve names to ids before acting.
  */
 export function buildAgentTools(agent: Agent, org: Organization, context: AgentToolContext): ToolSet {
+  // Web-research tools are read-only and ungoverned; they apply whenever the
+  // agent has the capability, independent of company-action permissions.
+  const research = buildResearchTools(agent);
+
   const granted = ACTION_TYPES.filter((type) => (agent.permissions ?? []).includes(type));
-  if (granted.length === 0) return {};
+  if (granted.length === 0) return research;
 
   const governance = getGovernance(org);
-  const tools: ToolSet = {};
+  const tools: ToolSet = { ...research };
 
   tools.list_company_directory = tool({
     description:
@@ -67,20 +72,25 @@ export function buildAgentTools(agent: Agent, org: Organization, context: AgentT
   return tools;
 }
 
-/** Extra system-prompt block describing the agent's authority. */
+/** Extra system-prompt block describing the agent's authority and capabilities. */
 export function describeAuthority(agent: Agent, org: Organization): string | null {
+  const research = describeResearch(agent);
   const granted = ACTION_TYPES.filter((type) => (agent.permissions ?? []).includes(type));
-  if (granted.length === 0) return null;
+
+  if (granted.length === 0) return research;
+
   const governance = getGovernance(org);
   const lines = granted.map((type) => {
     const definition = COMPANY_ACTIONS[type];
     return `- ${type}: ${definition.label} (${governance[type] === "board" ? "requires Board approval" : "autonomous"})`;
   });
-  return [
+  const authority = [
     "You have real authority to manage company personnel through your tools:",
     ...lines,
     "Use list_company_directory to resolve employee/department names to ids before acting.",
     "When an action requires Board approval, submit it anyway when appropriate — it executes automatically after approval. Tell the user it is awaiting the Board.",
     "Act on clear requests without asking for unnecessary confirmation; day-to-day operations should not need Board involvement unless policy requires it.",
   ].join("\n");
+
+  return research ? `${authority}\n\n${research}` : authority;
 }
