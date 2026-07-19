@@ -1,7 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Loader2, Plus, Send } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  ClipboardList,
+  FileCheck,
+  ListChecks,
+  Loader2,
+  MessageSquareReply,
+  Plus,
+  Send,
+  Users,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -33,18 +46,11 @@ interface TaskAgent {
 
 interface TaskUpdateItem {
   id: string;
-  kind: "result" | "feedback" | "plan" | "subtask_result" | "validation";
+  kind: "result" | "feedback" | "plan" | "subtask_result";
   content: string;
   author: string | null;
   createdAt: string;
 }
-
-const UPDATE_LABELS: Record<string, string> = {
-  result: "Earlier result",
-  plan: "Delegation plan",
-  subtask_result: "Subtask result",
-  validation: "Goal validation",
-};
 
 interface TaskItem {
   id: string;
@@ -166,16 +172,37 @@ export function TasksView({ orgSlug, agents }: { orgSlug: string; agents: TaskAg
 }
 
 function TaskCard({ task, orgSlug, onChanged }: { task: TaskItem; orgSlug: string; onChanged: () => void }) {
+  const updates = task.updates ?? [];
   const [open, setOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [sending, setSending] = useState(false);
-  const hasDetail = Boolean(
-    task.result || task.error || (task.subtasks && task.subtasks.length > 0) || (task.updates && task.updates.length > 0)
-  );
+  // Optimistic "working" flag so feedback visibly does something before the
+  // server status catches up.
+  const [justSubmitted, setJustSubmitted] = useState(false);
+
+  const hasDetail = updates.length > 0 || Boolean(task.result || task.error);
+  const working = justSubmitted || task.status === "in_progress" || task.status === "pending";
   const finished = task.status === "completed" || task.status === "failed";
-  // The latest result already renders as the Deliverable — the history shows
-  // everything else (feedback rounds and superseded results).
-  const history = (task.updates ?? []).filter((u) => !(u.kind === "result" && u.content === task.result));
+
+  // Clear the optimistic flag once the server confirms the task is running
+  // again or has produced a fresh result.
+  useEffect(() => {
+    if (task.status === "in_progress" || task.status === "pending") setJustSubmitted(false);
+  }, [task.status]);
+  const prevResult = useRef(task.result);
+  useEffect(() => {
+    if (task.result !== prevResult.current) {
+      prevResult.current = task.result;
+      setJustSubmitted(false);
+    }
+  }, [task.result]);
+
+  // The index of the most recent result is the current deliverable; earlier
+  // results were superseded by feedback.
+  const lastResultIndex = (() => {
+    for (let i = updates.length - 1; i >= 0; i--) if (updates[i].kind === "result") return i;
+    return -1;
+  })();
 
   async function sendFeedback() {
     const message = feedback.trim();
@@ -193,12 +220,14 @@ function TaskCard({ task, orgSlug, onChanged }: { task: TaskItem; orgSlug: strin
       return;
     }
     setFeedback("");
-    toast.success(`Feedback sent — ${task.agent?.name ?? "the coordinator"} is back on it`);
+    setJustSubmitted(true);
+    setOpen(true);
+    toast.success(`Feedback sent — ${task.agent?.name ?? "the coordinator"} is reworking it`);
     onChanged();
   }
 
   return (
-    <Card className="py-4">
+    <Card className={cn("py-4", working && "border-warning/40")}>
       <CardContent className="flex flex-col gap-3 px-4">
         <button
           className={cn("flex items-center gap-3 text-left", hasDetail && "cursor-pointer")}
@@ -223,81 +252,53 @@ function TaskCard({ task, orgSlug, onChanged }: { task: TaskItem; orgSlug: strin
               <span className="hidden text-xs text-muted-foreground sm:inline">{task.agent.name}</span>
             </div>
           )}
-          <StatusBadge status={task.status} />
+          <StatusBadge status={working ? "in_progress" : task.status} />
         </button>
 
         {open && (
-          <div className="flex min-w-0 flex-col gap-3 overflow-hidden border-t pt-3">
-            {task.subtasks && task.subtasks.length > 0 && (
-              <div className="flex flex-col gap-2">
-                <div className="text-xs font-medium text-muted-foreground">
-                  Delegated to {task.subtasks.length} report{task.subtasks.length === 1 ? "" : "s"}
-                </div>
-                {task.subtasks.map((subtask) => (
-                  <SubtaskRow key={subtask.id} subtask={subtask} />
+          <div className="flex min-w-0 flex-col gap-4 overflow-hidden border-t pt-4">
+            {working && (
+              <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
+                <Loader2 className="size-4 animate-spin" />
+                {task.agent?.name ?? "The coordinator"} is working on this…
+              </div>
+            )}
+
+            {updates.length === 0 && !working && (
+              <p className="text-sm text-muted-foreground">No activity recorded.</p>
+            )}
+
+            {updates.length > 0 && (
+              <ol className="flex flex-col">
+                {updates.map((update, i) => (
+                  <TimelineEntry
+                    key={update.id}
+                    update={update}
+                    agent={task.agent}
+                    taskTitle={task.title}
+                    isFinalResult={i === lastResultIndex}
+                    isLast={i === updates.length - 1}
+                  />
                 ))}
-              </div>
+              </ol>
             )}
-            {history.length > 0 && (
-              <div className="flex flex-col gap-2">
-                <div className="text-xs font-medium text-muted-foreground">History</div>
-                {history.map((update) => {
-                  const validationFailed = update.kind === "validation" && update.content.startsWith("FAILED");
-                  const validationPassed = update.kind === "validation" && update.content.startsWith("PASSED");
-                  return (
-                    <div
-                      key={update.id}
-                      className={cn(
-                        "min-w-0 overflow-hidden rounded-md border p-3 text-sm",
-                        update.kind === "feedback" && "border-primary/30 bg-primary/5",
-                        validationFailed && "border-destructive/30 bg-destructive/5",
-                        validationPassed && "border-success/30 bg-success/5",
-                        update.kind !== "feedback" && update.kind !== "validation" && "bg-muted/20"
-                      )}
-                    >
-                      <div className="pb-1 text-xs font-medium text-muted-foreground">
-                        {update.kind === "feedback"
-                          ? `Feedback from ${update.author ?? "the requester"}`
-                          : (UPDATE_LABELS[update.kind] ?? "Update")}{" "}
-                        · {new Date(update.createdAt).toLocaleString()}
-                      </div>
-                      {update.kind === "feedback" ? (
-                        <p className="whitespace-pre-wrap break-words">{update.content}</p>
-                      ) : (
-                        <Markdown>{update.content}</Markdown>
-                      )}
-                      {(update.kind === "result" || update.kind === "subtask_result") && (
-                        <OutputActions text={update.content} defaultTitle={task.title} className="pt-1" />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+
             {task.error && (
               <div className="break-words rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
                 {task.error}
               </div>
             )}
-            {task.result && (
-              <div className="min-w-0 overflow-hidden rounded-md border bg-muted/30 p-3 text-sm">
-                <div className="flex items-center justify-between gap-2 pb-2">
-                  <span className="text-xs font-medium text-muted-foreground">Deliverable</span>
-                  <OutputActions text={task.result} defaultTitle={task.title} />
-                </div>
-                <Markdown>{task.result}</Markdown>
-              </div>
-            )}
-            {finished && (
-              <div className="flex flex-col gap-2">
+
+            {finished && !working && (
+              <div className="flex flex-col gap-2 rounded-md border bg-muted/20 p-3">
                 <div className="text-xs font-medium text-muted-foreground">
-                  Follow up with {task.agent?.name ?? "the coordinator"}
+                  Not quite right? Reply to {task.agent?.name ?? "the coordinator"} and they&apos;ll revise the result.
                 </div>
                 <Textarea
                   value={feedback}
                   onChange={(e) => setFeedback(e.target.value)}
                   rows={2}
-                  placeholder='e.g. "This only described the hire — actually hire them now."'
+                  placeholder='e.g. "Add a section on rollout risks and tighten the summary."'
                 />
                 <Button
                   size="sm"
@@ -306,7 +307,7 @@ function TaskCard({ task, orgSlug, onChanged }: { task: TaskItem; orgSlug: strin
                   onClick={() => void sendFeedback()}
                 >
                   <Send />
-                  {sending ? "Sending…" : "Send feedback & continue"}
+                  {sending ? "Sending…" : "Send feedback & revise"}
                 </Button>
               </div>
             )}
@@ -317,27 +318,101 @@ function TaskCard({ task, orgSlug, onChanged }: { task: TaskItem; orgSlug: strin
   );
 }
 
-function SubtaskRow({ subtask }: { subtask: TaskItem }) {
-  const [open, setOpen] = useState(false);
+const STEP_META: Record<
+  TaskUpdateItem["kind"],
+  { label: (final: boolean) => string; icon: typeof ListChecks; tone: string }
+> = {
+  plan: { label: () => "Planned the work", icon: ListChecks, tone: "text-indigo-500" },
+  subtask_result: { label: () => "Subtask completed", icon: Users, tone: "text-sky-500" },
+  result: { label: (final) => (final ? "Final result" : "Draft result"), icon: FileCheck, tone: "text-emerald-500" },
+  feedback: { label: () => "Your feedback", icon: MessageSquareReply, tone: "text-primary" },
+};
+
+function TimelineEntry({
+  update,
+  agent,
+  taskTitle,
+  isFinalResult,
+  isLast,
+}: {
+  update: TaskUpdateItem;
+  agent: TaskAgent | null;
+  taskTitle: string;
+  isFinalResult: boolean;
+  isLast: boolean;
+}) {
+  const meta = STEP_META[update.kind];
+  const Icon = meta.icon;
+  const isFeedback = update.kind === "feedback";
+  const isResultLike = update.kind === "result" || update.kind === "subtask_result";
+
+  // Subtask results are stored as "<subtitle> — by <name>…:\n<body>"; split
+  // the header line from the body for a cleaner display.
+  let heading = meta.label(isFinalResult);
+  let byline: string | null = null;
+  let body = update.content;
+  if (update.kind === "subtask_result") {
+    const nl = update.content.indexOf("\n");
+    if (nl > 0) {
+      heading = update.content.slice(0, nl).replace(/:$/, "");
+      body = update.content.slice(nl + 1);
+    }
+  } else if (update.kind === "result") {
+    byline = agent ? `${agent.name}${isFinalResult ? "" : " · superseded by feedback below"}` : null;
+  } else if (isFeedback) {
+    byline = update.author ?? "You";
+  }
+
   return (
-    <div className="rounded-md border">
-      <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm"
-        onClick={() => setOpen(!open)}
-      >
-        {subtask.agent && <AgentAvatar name={subtask.agent.name} color={subtask.agent.avatarColor} size="sm" />}
-        <span className="min-w-0 flex-1 truncate">{subtask.title}</span>
-        <StatusBadge status={subtask.status} />
-      </button>
-      {open && (subtask.result || subtask.error || subtask.description) && (
-        <div className="flex min-w-0 flex-col gap-2 overflow-hidden border-t px-3 py-2 text-sm">
-          {subtask.description && <p className="break-words text-xs text-muted-foreground">{subtask.description}</p>}
-          {subtask.error && <p className="break-words text-destructive">{subtask.error}</p>}
-          {subtask.result && <Markdown>{subtask.result}</Markdown>}
-          {subtask.result && <OutputActions text={subtask.result} defaultTitle={subtask.title} className="pt-1" />}
+    <li className="flex gap-3">
+      {/* rail */}
+      <div className="flex flex-col items-center">
+        <div
+          className={cn(
+            "flex size-7 shrink-0 items-center justify-center rounded-full border bg-background",
+            meta.tone
+          )}
+        >
+          <Icon className="size-3.5" />
         </div>
-      )}
-    </div>
+        {!isLast && <div className="w-px flex-1 bg-border" />}
+      </div>
+
+      {/* content */}
+      <div className={cn("min-w-0 flex-1", isLast ? "pb-1" : "pb-5")}>
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="text-sm font-semibold">{heading}</div>
+          <div className="shrink-0 text-xs text-muted-foreground">
+            {new Date(update.createdAt).toLocaleString()}
+          </div>
+        </div>
+        {byline && <div className="text-xs text-muted-foreground">{byline}</div>}
+
+        <div
+          className={cn(
+            "mt-2 min-w-0 overflow-hidden rounded-md border p-3 text-sm",
+            isFeedback && "border-primary/30 bg-primary/5",
+            isFinalResult && "border-emerald-500/40 bg-emerald-500/5",
+            !isFeedback && !isFinalResult && "bg-muted/20"
+          )}
+        >
+          {isFinalResult && (
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <Badge variant="success">Deliverable</Badge>
+              <OutputActions text={body} defaultTitle={taskTitle} />
+            </div>
+          )}
+          {isFeedback ? (
+            <p className="whitespace-pre-wrap break-words">{body}</p>
+          ) : (
+            <Markdown>{body}</Markdown>
+          )}
+          {isResultLike && !isFinalResult && (
+            <OutputActions text={body} defaultTitle={taskTitle} className="pt-1" />
+          )}
+        </div>
+      </div>
+    </li>
   );
 }
 

@@ -108,7 +108,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
         ...serialize(root),
         subtasks: children.filter((c) => c.parentTaskId === root.id).map(serialize),
         updates: updates
-          .filter((u) => u.taskId === root.id)
+          // "validation" is a retired kind; ignore any legacy rows.
+          .filter((u) => u.taskId === root.id && u.kind !== "validation")
           .map((u) => ({
             id: u.id,
             kind: u.kind,

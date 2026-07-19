@@ -134,17 +134,15 @@ function actionsBlock(actions: MessageAction[]): string {
 }
 
 // The task log is the shared memory of a task. Every meaningful step —
-// delegation plan, subtask results, aggregated deliverables, human feedback,
-// and validation verdicts — is appended here so no agent working the task
-// ever loses context.
-type UpdateKind = "result" | "feedback" | "plan" | "subtask_result" | "validation";
+// delegation plan, subtask results, aggregated deliverables, and human
+// feedback — is appended here so no agent working the task ever loses context.
+type UpdateKind = "result" | "feedback" | "plan" | "subtask_result";
 
 const UPDATE_LABELS: Record<UpdateKind, string> = {
   result: "Result",
   feedback: "Feedback from the requester",
   plan: "Delegation plan",
   subtask_result: "Subtask result",
-  validation: "Goal validation",
 };
 
 async function recordUpdate(taskId: string, kind: UpdateKind, content: string): Promise<void> {
@@ -163,52 +161,10 @@ async function taskLog(taskId: string): Promise<string> {
     .join("\n\n---\n\n");
 }
 
-const validationSchema = z.object({ achieved: z.boolean(), reason: z.string().min(1) });
-
 /**
- * Validation hook: after a deliverable is produced, critically check that the
- * ORIGINAL goal was actually achieved — not merely described or planned. A
- * clean failure (missing data, blocked, only described) is an acceptable,
- * intended outcome. The coordinator performs the check with a critical
- * framing and no tools (read-only judgment); an unparseable verdict from a
- * weak model does not false-fail the task.
- */
-async function validateGoal(
-  coordinator: Agent,
-  org: Organization,
-  task: { id: string; title: string; description: string | null },
-  deliverable: string
-): Promise<{ achieved: boolean; reason: string }> {
-  const prompt = [
-    "You are validating whether a company task actually achieved its original goal.",
-    "",
-    `Original goal:\nTask: ${task.title}${task.description ? `\n${task.description}` : ""}`,
-    "",
-    "Full activity log for this task:",
-    await taskLog(task.id),
-    "",
-    "Proposed final deliverable:",
-    deliverable,
-    "",
-    "Verify critically. If the goal required a company action (e.g. hiring, creating a department), confirm it was ACTUALLY executed — look for an 'Actions taken' section showing 'executed' or 'awaiting Board approval'. Work that only describes or plans the action, or is blocked by missing data, has NOT achieved the goal.",
-    "It is correct and acceptable to report failure when the goal was not achieved — do not pretend success.",
-    "Treat an action that is correctly 'awaiting Board approval' as achieved (the goal is properly in motion).",
-    'Respond with JSON only: {"achieved": true|false, "reason": "one concise sentence"}',
-  ].join("\n");
-
-  const text = await agentReply(coordinator, org, prompt);
-  const parsed = validationSchema.safeParse(extractJson(text));
-  if (!parsed.success) {
-    return { achieved: true, reason: "Validation inconclusive (verdict could not be parsed); accepted as complete." };
-  }
-  return parsed.data;
-}
-
-/**
- * Record the deliverable, run the validation hook, and set the terminal
- * status: completed when the goal was achieved, failed (with the reason) when
- * it was not. The deliverable is kept either way so the requester can review
- * it and follow up with feedback.
+ * Record the deliverable, mark the task complete, and email the Board the
+ * final output. The deliverable is kept so the requester can review it and
+ * follow up with feedback.
  */
 async function finalize(
   taskId: string,
@@ -217,31 +173,18 @@ async function finalize(
   task: { id: string; title: string; description: string | null },
   deliverable: string
 ): Promise<void> {
-  await setTask(taskId, { result: deliverable });
+  await setTask(taskId, { result: deliverable, status: "completed", error: null });
   await recordUpdate(taskId, "result", deliverable);
 
-  const verdict = await validateGoal(coordinator, org, task, deliverable);
-  await recordUpdate(taskId, "validation", `${verdict.achieved ? "PASSED" : "FAILED"} — ${verdict.reason}`);
-
-  const outcome = verdict.achieved ? "completed" : "failed";
-  if (verdict.achieved) {
-    await setTask(taskId, { status: "completed", error: null });
-  } else {
-    await setTask(taskId, { status: "failed", error: verdict.reason });
-  }
-
   // Email the Board the final output so it lands in the Board room inbox.
-  const statusLine = verdict.achieved
-    ? "✅ Completed — goal achieved."
-    : `⚠️ Could not fully complete — ${verdict.reason}`;
   await db.insert(boardEmails).values({
     organizationId: org.id,
     taskId,
     fromAgentId: coordinator.id,
     fromName: `${coordinator.name} (${coordinator.title})`,
-    subject: `${verdict.achieved ? "Task complete" : "Task needs attention"}: ${task.title}`,
-    body: `${statusLine}\n\n${deliverable}`,
-    outcome,
+    subject: `Task complete: ${task.title}`,
+    body: deliverable,
+    outcome: "completed",
   });
 }
 
