@@ -12,12 +12,15 @@ import {
   agents,
   boardEmails,
   organizations,
+  projects,
   type Agent,
   type MessageAction,
   type Organization,
 } from "@/lib/db/schema";
+import { addTextToKnowledge, defaultKnowledgeCollectionId } from "@/lib/rag/knowledge";
 import { retrieveContext } from "@/lib/rag/retrieve";
 
+import { getChiefAgent } from "./chief";
 import { extractJson } from "./json";
 import { fallbackModelId, resolveAgentRuntime } from "./resolve";
 
@@ -30,28 +33,37 @@ import { fallbackModelId, resolveAgentRuntime } from "./resolve";
 //      coordinator then aggregates the results into the final deliverable.
 //   3. An agent with no reports (or a plan that fails to parse) completes
 //      the task solo.
-//   4. Every deliverable passes a validation hook that checks the ORIGINAL
-//      goal was actually achieved; if not, the task fails cleanly with a
-//      reason (an acceptable outcome) instead of reporting false success.
+//   4. On completion the deliverable is emailed to the Board and, when the
+//      org's auto-knowledge setting is on, the coordinator decides whether it
+//      is reusable reference material and files it in the knowledge base.
 //
-// A single per-task activity log (plan, subtask results, deliverables,
-// feedback, validation verdicts) is the shared memory every agent reads
-// before working, so context is never lost across the team or across
-// feedback rounds. Runs in-process like the ingestion queue; every state
-// transition is persisted so the Tasks UI can poll live progress.
+// Projects are larger requests: a project manager plans a project into tasks
+// (each of which runs through the engine); when all a project's tasks finish
+// the manager writes a summary.
+//
+// A single per-task activity log (plan, subtask results, deliverables, and
+// feedback) is the shared memory every agent reads before working. Runs
+// in-process like the ingestion queue; every state transition is persisted so
+// the UI can poll live progress.
 
 const MAX_SUBTASKS = 5;
+const MAX_PROJECT_TASKS = 6;
 
 interface QueueEntry {
-  taskId: string;
-  mode: "run" | "continue";
+  id: string;
+  mode: "run" | "continue" | "project";
 }
 
 const queue: QueueEntry[] = [];
 let running = false;
 
 export function enqueueTask(taskId: string, mode: "run" | "continue" = "run"): void {
-  queue.push({ taskId, mode });
+  queue.push({ id: taskId, mode });
+  if (!running) void drain();
+}
+
+export function enqueueProject(projectId: string): void {
+  queue.push({ id: projectId, mode: "project" });
   if (!running) void drain();
 }
 
@@ -61,14 +73,22 @@ async function drain(): Promise<void> {
     while (queue.length > 0) {
       const entry = queue.shift()!;
       try {
-        if (entry.mode === "continue") await continueTask(entry.taskId);
-        else await runTask(entry.taskId);
+        if (entry.mode === "project") await planProject(entry.id);
+        else if (entry.mode === "continue") await continueTask(entry.id);
+        else await runTask(entry.id);
       } catch (err) {
-        console.error(`task ${entry.taskId} failed`, err);
-        await setTask(entry.taskId, {
-          status: "failed",
-          error: err instanceof Error ? err.message : String(err),
-        });
+        console.error(`${entry.mode} ${entry.id} failed`, err);
+        if (entry.mode === "project") {
+          await db
+            .update(projects)
+            .set({ status: "in_progress", updatedAt: new Date() })
+            .where(eq(projects.id, entry.id));
+        } else {
+          await setTask(entry.id, {
+            status: "failed",
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     }
   } finally {
@@ -162,15 +182,15 @@ async function taskLog(taskId: string): Promise<string> {
 }
 
 /**
- * Record the deliverable, mark the task complete, and email the Board the
- * final output. The deliverable is kept so the requester can review it and
- * follow up with feedback.
+ * Record the deliverable, mark the task complete, email the Board, auto-curate
+ * knowledge, and advance the parent project if any. The deliverable is kept so
+ * the requester can review it and follow up with feedback.
  */
 async function finalize(
   taskId: string,
   coordinator: Agent,
   org: Organization,
-  task: { id: string; title: string; description: string | null },
+  task: { id: string; title: string; description: string | null; projectId?: string | null },
   deliverable: string
 ): Promise<void> {
   await setTask(taskId, { result: deliverable, status: "completed", error: null });
@@ -186,6 +206,62 @@ async function finalize(
     body: deliverable,
     outcome: "completed",
   });
+
+  await curateKnowledge(coordinator, org, task, deliverable);
+
+  if (task.projectId) await checkProjectCompletion(task.projectId);
+}
+
+const curationSchema = z.object({
+  save: z.boolean(),
+  title: z.string().optional(),
+  content: z.string().optional(),
+});
+
+function autoKnowledgeEnabled(org: Organization): boolean {
+  const settings = (org.settings ?? {}) as { autoKnowledge?: boolean };
+  // On by default; only an explicit false disables it.
+  return settings.autoKnowledge !== false;
+}
+
+/**
+ * The company decides what to remember: after a deliverable, the coordinator
+ * judges whether it is reusable reference knowledge and, if so, files a
+ * cleaned version in the knowledge base automatically.
+ */
+async function curateKnowledge(
+  coordinator: Agent,
+  org: Organization,
+  task: { id: string; title: string; description: string | null },
+  deliverable: string
+): Promise<void> {
+  if (!autoKnowledgeEnabled(org)) return;
+  try {
+    const text = await agentReply(
+      coordinator,
+      org,
+      [
+        "You decide what the company should remember in its shared knowledge base.",
+        "",
+        `Task: ${task.title}${task.description ? `\n${task.description}` : ""}`,
+        "",
+        "Deliverable:",
+        deliverable,
+        "",
+        "If this deliverable contains reusable reference knowledge worth keeping for the whole company (facts, decisions, guides, research, specs), respond to save it. If it is ephemeral, a one-off chat, or not useful later, do not save.",
+        'Respond with JSON only: {"save": true, "title": "concise document title", "content": "the cleaned, self-contained knowledge to store"} or {"save": false}.',
+      ].join("\n")
+    );
+    const parsed = curationSchema.safeParse(extractJson(text));
+    if (!parsed.success || !parsed.data.save) return;
+    const title = parsed.data.title?.trim() || task.title;
+    const content = parsed.data.content?.trim() || deliverable;
+    const collectionId = await defaultKnowledgeCollectionId(org.id);
+    await addTextToKnowledge({ orgId: org.id, collectionId, title, content });
+    await recordUpdate(task.id, "result", `📚 Filed in the knowledge base: "${title}"`);
+  } catch (err) {
+    console.error("knowledge curation failed", err);
+  }
 }
 
 const planSchema = z.object({
@@ -385,7 +461,7 @@ async function continueTask(taskId: string): Promise<void> {
       [
         `Task: ${task.title}${task.description ? `\n\n${task.description}` : ""}`,
         "",
-        "Full activity log for this task so far (every result, feedback, and validation — read it all so no context is lost):",
+        "Full activity log for this task so far (every result and feedback — read it all so no context is lost):",
         await taskLog(task.id),
         "",
         "Address the latest feedback and continue the task to completion.",
@@ -395,4 +471,149 @@ async function continueTask(taskId: string): Promise<void> {
     )) + actionsBlock(actions);
 
   await finalize(taskId, coordinator, org, task, result);
+}
+
+// --- Projects --------------------------------------------------------------
+
+/**
+ * Create a task (with a coordinator assignment) and enqueue it. Shared by
+ * project planning and the manual "add task to project" flow.
+ */
+export async function createAndEnqueueTask(options: {
+  orgId: string;
+  title: string;
+  description?: string | null;
+  coordinatorAgentId: string;
+  projectId?: string | null;
+  createdByUserId?: string | null;
+  createdByAgentId?: string | null;
+}): Promise<string> {
+  const [task] = await db
+    .insert(agentTasks)
+    .values({
+      organizationId: options.orgId,
+      projectId: options.projectId ?? null,
+      title: options.title,
+      description: options.description ?? null,
+      status: "pending",
+      createdByUserId: options.createdByUserId ?? null,
+      createdByAgentId: options.createdByAgentId ?? null,
+    })
+    .returning();
+  await db.insert(agentTaskAssignments).values({ taskId: task.id, agentId: options.coordinatorAgentId, role: "coordinator" });
+  enqueueTask(task.id);
+  return task.id;
+}
+
+const projectPlanSchema = z.object({
+  tasks: z
+    .array(z.object({ title: z.string().min(1), description: z.string().min(1) }))
+    .min(1)
+    .max(MAX_PROJECT_TASKS),
+});
+
+/**
+ * The project manager breaks a project into tasks. Each task is created in the
+ * project and enqueued; a manager delegates each to the best-suited report, or
+ * runs it themselves when they have no reports.
+ */
+async function planProject(projectId: string): Promise<void> {
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+  if (!project || project.status === "cancelled") return;
+  const org = await db.query.organizations.findFirst({ where: eq(organizations.id, project.organizationId) });
+  if (!org) throw new Error("Organization not found");
+
+  const manager = project.managerAgentId
+    ? await db.query.agents.findFirst({ where: eq(agents.id, project.managerAgentId) })
+    : await getChiefAgent(org.id);
+  if (!manager) throw new Error("No project manager available");
+
+  const reports = await db.query.agents.findMany({
+    where: and(eq(agents.reportsToAgentId, manager.id), eq(agents.status, "active")),
+  });
+  const assignee = reports[0] ?? manager;
+
+  const planText = await agentReply(
+    manager,
+    org,
+    [
+      `You are the project manager for this project:`,
+      `Project: ${project.title}${project.description ? `\n${project.description}` : ""}`,
+      "",
+      `Break the project into up to ${MAX_PROJECT_TASKS} concrete tasks that together deliver the project. Each task should be self-contained and independently workable.`,
+      'Respond with JSON only: {"tasks":[{"title":"...","description":"..."}]}',
+    ].join("\n")
+  );
+  const parsed = projectPlanSchema.safeParse(extractJson(planText));
+  const tasks = parsed.success ? parsed.data.tasks : [{ title: project.title, description: project.description ?? project.title }];
+
+  await db.update(projects).set({ status: "in_progress", updatedAt: new Date() }).where(eq(projects.id, projectId));
+
+  for (const t of tasks) {
+    await createAndEnqueueTask({
+      orgId: org.id,
+      projectId,
+      title: t.title,
+      description: t.description,
+      coordinatorAgentId: assignee.id,
+      createdByAgentId: manager.id,
+    });
+  }
+}
+
+/**
+ * When every task in a project has reached a terminal state, the manager
+ * writes a project summary, the project is marked complete, and the Board is
+ * emailed.
+ */
+async function checkProjectCompletion(projectId: string): Promise<void> {
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+  if (!project || project.status === "completed" || project.status === "cancelled") return;
+
+  const tasks = await db.query.agentTasks.findMany({ where: eq(agentTasks.projectId, projectId) });
+  if (tasks.length === 0) return;
+  const allDone = tasks.every((t) => t.status === "completed" || t.status === "failed");
+  if (!allDone) return;
+
+  const org = await db.query.organizations.findFirst({ where: eq(organizations.id, project.organizationId) });
+  if (!org) return;
+  const manager = project.managerAgentId
+    ? await db.query.agents.findFirst({ where: eq(agents.id, project.managerAgentId) })
+    : await getChiefAgent(org.id);
+
+  let summary = tasks.map((t) => `- ${t.title}: ${t.status}`).join("\n");
+  if (manager) {
+    try {
+      summary = await agentReply(
+        manager,
+        org,
+        [
+          `The project "${project.title}" is complete. Its tasks and their results:`,
+          "",
+          ...tasks.map((t) => `### ${t.title} (${t.status})\n${t.result ?? t.error ?? "(no result)"}`),
+          "",
+          "Write a concise executive summary of the project outcome for the Board.",
+        ].join("\n")
+      );
+    } catch (err) {
+      console.error("project summary failed", err);
+    }
+  }
+
+  await db.update(projects).set({ status: "completed", summary, updatedAt: new Date() }).where(eq(projects.id, projectId));
+
+  await db.insert(boardEmails).values({
+    organizationId: org.id,
+    fromAgentId: manager?.id ?? null,
+    fromName: manager ? `${manager.name} (${manager.title})` : "Project manager",
+    subject: `Project complete: ${project.title}`,
+    body: summary,
+    outcome: "completed",
+  });
+
+  if (autoKnowledgeEnabled(org) && manager) {
+    await curateKnowledge(manager, org, { id: tasks[0].id, title: project.title, description: project.description }, summary).catch(
+      () => {}
+    );
+  }
 }

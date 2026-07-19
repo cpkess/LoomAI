@@ -79,6 +79,8 @@ export const agentTasks = pgTable("agent_tasks", {
   organizationId: uuid("organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
+  // FK enforced at the app layer to avoid a schema import cycle with projects.
+  projectId: uuid("project_id"),
   parentTaskId: uuid("parent_task_id"),
   title: text("title").notNull(),
   description: text("description"),

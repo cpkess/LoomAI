@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 
 interface DepartmentItem {
   id: string;
@@ -43,15 +44,18 @@ export function SettingsView({
   departments,
   models,
   governance,
+  autoKnowledge,
 }: {
   orgSlug: string;
   orgName: string;
   departments: DepartmentItem[];
   models: { id: string; label: string }[];
   governance: Record<string, "auto" | "board">;
+  autoKnowledge: boolean;
 }) {
   const router = useRouter();
   const [creating, setCreating] = useState(false);
+  const [autoKb, setAutoKb] = useState(autoKnowledge);
 
   async function setDefaultModel(department: DepartmentItem, modelId: string) {
     const res = await fetch(`/api/orgs/${orgSlug}/workspaces/${department.id}`, {
@@ -132,6 +136,44 @@ export function SettingsView({
               </div>
             </div>
           ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Knowledge</CardTitle>
+          <CardDescription>
+            Every AI employee automatically has access to the entire company knowledge base — no per-employee or
+            per-department configuration.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+            <div>
+              <div className="text-sm font-medium">Auto-capture knowledge from work</div>
+              <div className="text-xs text-muted-foreground">
+                After each task, the company decides whether the output is reusable and files it in the knowledge base
+                automatically.
+              </div>
+            </div>
+            <Switch
+              checked={autoKb}
+              onCheckedChange={async (v) => {
+                setAutoKb(v);
+                const res = await fetch(`/api/orgs/${orgSlug}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ autoKnowledge: v }),
+                });
+                if (!res.ok) {
+                  setAutoKb(!v);
+                  toast.error("Could not update setting");
+                  return;
+                }
+                toast.success(v ? "Auto-capture enabled" : "Auto-capture disabled");
+              }}
+            />
+          </div>
         </CardContent>
       </Card>
 

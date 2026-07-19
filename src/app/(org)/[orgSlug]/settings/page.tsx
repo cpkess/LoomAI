@@ -37,6 +37,7 @@ export default async function SettingsPage({ params }: { params: Promise<{ orgSl
         }))}
         models={models.map((m) => ({ id: m.id, label: `${m.displayName} · ${m.providerName}` }))}
         governance={getGovernance(ctx.org)}
+        autoKnowledge={((ctx.org.settings ?? {}) as { autoKnowledge?: boolean }).autoKnowledge !== false}
       />
     </div>
   );

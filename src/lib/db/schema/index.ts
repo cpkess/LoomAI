@@ -9,3 +9,4 @@ export * from "./tools";
 export * from "./governance";
 export * from "./taskUpdates";
 export * from "./emails";
+export * from "./projects";

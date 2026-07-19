@@ -36,6 +36,13 @@
       "when": 1784427374195,
       "tag": "0004_board_emails",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784461349409,
+      "tag": "0005_projects",
+      "breakpoints": true
     }
   ]
 }

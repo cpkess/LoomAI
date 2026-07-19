@@ -9,6 +9,7 @@ import { organizations } from "@/lib/db/schema";
 const updateSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   governance: z.partialRecord(z.enum(ACTION_TYPES), z.enum(["auto", "board"])).optional(),
+  autoKnowledge: z.boolean().optional(),
 });
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ orgSlug: string }> }) {
@@ -24,6 +25,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ orgSlu
         ...((settings.governance as Record<string, string>) ?? {}),
         ...parsed.data.governance,
       };
+    }
+    if (parsed.data.autoKnowledge !== undefined) {
+      settings.autoKnowledge = parsed.data.autoKnowledge;
     }
 
     const [org] = await db

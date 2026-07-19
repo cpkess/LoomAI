@@ -407,23 +407,10 @@ function AgentDialog({
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <Label>Knowledge collections</Label>
-            <div className="flex flex-wrap gap-2">
-              {collections.map((c) => (
-                <label key={c.id} className="flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-sm has-checked:border-primary has-checked:bg-accent">
-                  <input
-                    type="checkbox"
-                    className="accent-primary"
-                    checked={collectionIds.includes(c.id)}
-                    onChange={() => toggle(collectionIds, setCollectionIds, c.id)}
-                  />
-                  {c.name}
-                </label>
-              ))}
-              {collections.length === 0 && <p className="text-xs text-muted-foreground">No collections yet.</p>}
-            </div>
-          </div>
+          <p className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            Every AI employee automatically has access to the whole company knowledge base — no per-employee setup
+            needed.
+          </p>
 
           <DialogFooter>
             <Button type="submit" disabled={pending}>

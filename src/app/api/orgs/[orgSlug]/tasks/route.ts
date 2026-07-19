@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { enqueueTask } from "@/lib/agents/engine";
+import { createAndEnqueueTask } from "@/lib/agents/engine";
+import { serializeTaskTree } from "@/lib/agents/serialize";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
-import { agentTaskAssignments, agentTaskUpdates, agentTasks, agents, users } from "@/lib/db/schema";
+import { agents } from "@/lib/db/schema";
 
 const createSchema = z.object({
   title: z.string().min(1).max(200),
@@ -28,20 +29,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
       return Response.json({ error: `${coordinator.name} is paused` }, { status: 400 });
     }
 
-    const [task] = await db
-      .insert(agentTasks)
-      .values({
-        organizationId: ctx.org.id,
-        title,
-        description: description ?? null,
-        status: "pending",
-        createdByUserId: ctx.user.id,
-      })
-      .returning();
-    await db.insert(agentTaskAssignments).values({ taskId: task.id, agentId: coordinator.id, role: "coordinator" });
-
-    enqueueTask(task.id);
-    return Response.json({ task }, { status: 201 });
+    const taskId = await createAndEnqueueTask({
+      orgId: ctx.org.id,
+      title,
+      description,
+      coordinatorAgentId,
+      createdByUserId: ctx.user.id,
+    });
+    return Response.json({ task: { id: taskId } }, { status: 201 });
   } catch (err) {
     return errorResponse(err);
   }
@@ -51,74 +46,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
   try {
     const { orgSlug } = await params;
     const ctx = await requireOrg(orgSlug, "member");
-
-    // Top-level tasks with their subtasks and assignments.
-    const roots = await db.query.agentTasks.findMany({
-      where: and(eq(agentTasks.organizationId, ctx.org.id), isNull(agentTasks.parentTaskId)),
-      orderBy: desc(agentTasks.createdAt),
-      limit: 50,
-    });
-    const rootIds = roots.map((t) => t.id);
-    const children = rootIds.length
-      ? await db.query.agentTasks.findMany({
-          where: inArray(agentTasks.parentTaskId, rootIds),
-          orderBy: (t, { asc }) => asc(t.createdAt),
-        })
-      : [];
-    const allIds = [...rootIds, ...children.map((c) => c.id)];
-    const assignments = allIds.length
-      ? await db.query.agentTaskAssignments.findMany({ where: inArray(agentTaskAssignments.taskId, allIds) })
-      : [];
-    const updates = rootIds.length
-      ? await db.query.agentTaskUpdates.findMany({
-          where: inArray(agentTaskUpdates.taskId, rootIds),
-          orderBy: asc(agentTaskUpdates.createdAt),
-        })
-      : [];
-    const updateAuthorIds = [...new Set(updates.map((u) => u.authorUserId).filter((x): x is string => Boolean(x)))];
-    const updateAuthors = updateAuthorIds.length
-      ? await db.query.users.findMany({ where: inArray(users.id, updateAuthorIds) })
-      : [];
-    const authorsById = new Map(updateAuthors.map((u) => [u.id, u.name]));
-    const agentIds = [...new Set(assignments.map((a) => a.agentId))];
-    const taskAgents = agentIds.length
-      ? await db.query.agents.findMany({ where: inArray(agents.id, agentIds) })
-      : [];
-    const agentsById = new Map(taskAgents.map((a) => [a.id, a]));
-
-    const serialize = (task: typeof roots[number]) => {
-      const assignment = assignments.find((a) => a.taskId === task.id);
-      const agent = assignment ? agentsById.get(assignment.agentId) : undefined;
-      return {
-        id: task.id,
-        title: task.title,
-        description: task.description,
-        status: task.status,
-        result: task.result,
-        error: task.error,
-        createdAt: task.createdAt,
-        agent: agent
-          ? { id: agent.id, name: agent.name, title: agent.title, avatarColor: agent.avatarColor }
-          : null,
-      };
-    };
-
-    return Response.json({
-      tasks: roots.map((root) => ({
-        ...serialize(root),
-        subtasks: children.filter((c) => c.parentTaskId === root.id).map(serialize),
-        updates: updates
-          // "validation" is a retired kind; ignore any legacy rows.
-          .filter((u) => u.taskId === root.id && u.kind !== "validation")
-          .map((u) => ({
-            id: u.id,
-            kind: u.kind,
-            content: u.content,
-            author: u.authorUserId ? (authorsById.get(u.authorUserId) ?? "Unknown") : null,
-            createdAt: u.createdAt,
-          })),
-      })),
-    });
+    // Standalone tasks only (project tasks live under their project).
+    const tasks = await serializeTaskTree({ organizationId: ctx.org.id, projectId: null });
+    return Response.json({ tasks });
   } catch (err) {
     return errorResponse(err);
   }

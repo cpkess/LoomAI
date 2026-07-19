@@ -2,9 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import {
-  agentCollections,
   agents,
-  collectionWorkspaces,
   prompts,
   type Agent,
   type Conversation,
@@ -13,6 +11,7 @@ import {
 } from "@/lib/db/schema";
 import { listEnabledModels } from "@/lib/ai/registry";
 import { interpolatePrompt } from "@/lib/prompts/interpolate";
+import { allOrgCollectionIds } from "@/lib/rag/knowledge";
 
 export interface ChatConfig {
   /** ai_models row id to chat with. */
@@ -38,10 +37,9 @@ export async function resolveChatConfig(
   workspace: Workspace,
   org: Organization
 ): Promise<ChatConfig> {
-  const workspaceCollections = await db.query.collectionWorkspaces.findMany({
-    where: eq(collectionWorkspaces.workspaceId, workspace.id),
-  });
-  const collectionIds = new Set(workspaceCollections.map((c) => c.collectionId));
+  // Knowledge is org-wide: every conversation can draw on the whole company
+  // knowledge base, no per-department or per-agent configuration required.
+  const collectionIds = await allOrgCollectionIds(org.id);
 
   const workspaceSettings = (workspace.settings ?? {}) as { defaultModelId?: string };
 
@@ -53,12 +51,11 @@ export async function resolveChatConfig(
     if (agent.status !== "active") throw new Error(`${agent.name} is currently paused`);
 
     const runtime = await resolveAgentRuntime(agent, org);
-    for (const id of runtime.collectionIds) collectionIds.add(id);
 
     return {
       modelDbId: runtime.modelDbId ?? workspaceSettings.defaultModelId ?? (await fallbackModelId()),
       system: runtime.system,
-      collectionIds: [...collectionIds],
+      collectionIds,
       agent,
     };
   }
@@ -74,7 +71,7 @@ export async function resolveChatConfig(
   return {
     modelDbId: conversation.modelId ?? workspaceSettings.defaultModelId ?? (await fallbackModelId()),
     system,
-    collectionIds: [...collectionIds],
+    collectionIds,
   };
 }
 
@@ -83,17 +80,16 @@ export interface AgentRuntime {
   modelDbId: string | null;
   /** Identity + persona system prompt. */
   system: string;
-  /** The agent's own knowledge collections. */
+  /** Knowledge collections in scope — the whole org knowledge base. */
   collectionIds: string[];
 }
 
 /**
  * Resolve an AI employee's working configuration — identity/persona prompt,
- * model, and assigned knowledge. Used by both chat and the delegation engine.
+ * model, and knowledge. Used by both chat and the delegation engine. Every
+ * agent gets the entire organization knowledge base.
  */
 export async function resolveAgentRuntime(agent: Agent, org: Organization): Promise<AgentRuntime> {
-  const links = await db.query.agentCollections.findMany({ where: eq(agentCollections.agentId, agent.id) });
-
   let persona = agent.personaText ?? undefined;
   if (!persona && agent.personaPromptId) {
     const prompt = await db.query.prompts.findFirst({ where: eq(prompts.id, agent.personaPromptId) });
@@ -106,7 +102,7 @@ export async function resolveAgentRuntime(agent: Agent, org: Organization): Prom
   return {
     modelDbId: agent.modelId,
     system: persona ? `${identity}\n\n${persona}` : identity,
-    collectionIds: links.map((l) => l.collectionId),
+    collectionIds: await allOrgCollectionIds(org.id),
   };
 }
 
