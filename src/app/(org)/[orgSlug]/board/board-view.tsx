@@ -263,7 +263,13 @@ function EmailCard({ orgSlug, email, onChanged }: { orgSlug: string; email: Emai
               From {email.fromName} · {new Date(email.createdAt).toLocaleString()}
             </div>
           </div>
-          <Badge variant={email.outcome === "completed" ? "success" : "destructive"}>{email.outcome}</Badge>
+          <Badge
+            variant={
+              email.outcome === "completed" ? "success" : email.outcome === "review" ? "warning" : "destructive"
+            }
+          >
+            {email.outcome === "review" ? "review" : email.outcome}
+          </Badge>
         </button>
         {open && (
           <div className="min-w-0 overflow-hidden border-t pt-3">

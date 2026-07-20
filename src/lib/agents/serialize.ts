@@ -56,6 +56,7 @@ export async function serializeTaskTree(where: { organizationId: string; project
       status: task.status,
       result: task.result,
       error: task.error,
+      stageId: task.stageId ?? null,
       createdAt: task.createdAt,
       agent: agent
         ? { id: agent.id, name: agent.name, title: agent.title, avatarColor: agent.avatarColor }

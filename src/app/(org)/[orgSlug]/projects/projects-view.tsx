@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { FolderKanban, Loader2, Plus } from "lucide-react";
+import { CheckCircle2, FolderKanban, Gavel, Loader2, Milestone, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { Markdown } from "@/components/chat/markdown";
-import { StatusBadge, TaskCard, type TaskAgent, type TaskItem } from "@/components/tasks/task-card";
+import { TaskCard, type TaskAgent, type TaskItem } from "@/components/tasks/task-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +32,27 @@ interface ProjectListItem {
   manager: TaskAgent | null;
   taskCount: number;
   doneCount: number;
+  stageCount: number;
+  stageDoneCount: number;
+  awaitingReview: boolean;
+}
+
+interface Milestone {
+  id: string;
+  title: string;
+  description: string | null;
+  gate: "auto" | "review";
+  status: string;
+  summary: string | null;
+  reviewFeedback: string | null;
+  orderIndex: number;
+  tasks: TaskItem[];
+}
+
+interface ProjectDetail {
+  stages: Milestone[];
+  ungrouped: TaskItem[];
+  summary: string | null;
 }
 
 export function ProjectsView({
@@ -69,8 +90,8 @@ export function ProjectsView({
         <div>
           <h1 className="text-xl font-semibold">Projects</h1>
           <p className="text-sm text-muted-foreground">
-            Bigger, multi-step initiatives. A project manager plans the project into tasks and can add more; each task
-            runs through the org.
+            Bigger, longer initiatives. A manager plans a project into <strong>milestones</strong>; each milestone runs
+            as tasks and, at a <strong>review gate</strong>, pauses for the Board to approve or request changes.
           </p>
         </div>
         <Button onClick={() => setCreating(true)} disabled={agents.length === 0}>
@@ -90,7 +111,7 @@ export function ProjectsView({
         <Card>
           <CardContent className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
             <FolderKanban className="size-8" />
-            No projects yet. Start one and the manager will break it into tasks.
+            No projects yet. Start one and the manager will break it into milestones.
           </CardContent>
         </Card>
       ) : (
@@ -128,6 +149,13 @@ function projectStatusBadge(status: string) {
   switch (status) {
     case "completed":
       return <Badge variant="success">completed</Badge>;
+    case "awaiting_review":
+      return (
+        <Badge variant="warning">
+          <Gavel className="size-3" />
+          needs review
+        </Badge>
+      );
     case "in_progress":
       return <Badge variant="warning">in progress</Badge>;
     case "planning":
@@ -159,14 +187,14 @@ function ProjectCard({
   onToggle: () => void;
   onChanged: () => void;
 }) {
-  const [detail, setDetail] = useState<{ tasks: TaskItem[]; summary: string | null } | null>(null);
+  const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [addingTask, setAddingTask] = useState(false);
 
   const loadDetail = useCallback(async () => {
     const res = await fetch(`/api/orgs/${orgSlug}/projects/${project.id}`);
     if (res.ok) {
       const body = await res.json();
-      setDetail({ tasks: body.tasks, summary: body.project.summary });
+      setDetail({ stages: body.stages, ungrouped: body.ungrouped, summary: body.project.summary });
     }
   }, [orgSlug, project.id]);
 
@@ -175,11 +203,12 @@ function ProjectCard({
     void loadDetail();
   }, [open, loadDetail]);
 
-  // Poll detail while the project or any task is active.
+  // Poll detail while the project or any task is active (but not while a review
+  // gate is waiting on the Board — nothing changes until they act).
   const detailActive =
     project.status === "planning" ||
     project.status === "in_progress" ||
-    (detail?.tasks.some((t) => t.status === "pending" || t.status === "in_progress") ?? false);
+    (detail?.stages.some((s) => s.tasks.some((t) => t.status === "pending" || t.status === "in_progress")) ?? false);
   useEffect(() => {
     if (!open || !detailActive) return;
     const timer = setInterval(() => {
@@ -189,6 +218,11 @@ function ProjectCard({
     return () => clearInterval(timer);
   }, [open, detailActive, loadDetail, onChanged]);
 
+  const progressLabel =
+    project.stageCount > 0
+      ? `${project.stageDoneCount}/${project.stageCount} milestones`
+      : `${project.doneCount}/${project.taskCount} tasks`;
+
   return (
     <Card>
       <CardHeader>
@@ -197,16 +231,20 @@ function ProjectCard({
           <div className="min-w-0 flex-1">
             <CardTitle className="truncate">{project.title}</CardTitle>
             {project.description && <CardDescription className="truncate">{project.description}</CardDescription>}
-            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               {project.manager && (
                 <span className="flex items-center gap-1">
                   <AgentAvatar name={project.manager.name} color={project.manager.avatarColor} size="sm" />
                   {project.manager.name}
                 </span>
               )}
-              <span>
-                {project.doneCount}/{project.taskCount} tasks done
-              </span>
+              <span>{progressLabel}</span>
+              {project.awaitingReview && (
+                <Badge variant="warning" className="text-[10px]">
+                  <Gavel className="size-3" />
+                  review needed
+                </Badge>
+              )}
             </div>
           </div>
           {projectStatusBadge(project.status)}
@@ -218,7 +256,7 @@ function ProjectCard({
           {project.status === "planning" && (
             <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
               <Loader2 className="size-4 animate-spin" />
-              {project.manager?.name ?? "The manager"} is planning this project into tasks…
+              {project.manager?.name ?? "The manager"} is planning this project into milestones…
             </div>
           )}
 
@@ -237,28 +275,47 @@ function ProjectCard({
               )}
 
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">Tasks</span>
+                <span className="text-xs font-medium text-muted-foreground">Milestones</span>
                 <Button variant="outline" size="sm" onClick={() => setAddingTask(true)}>
                   <Plus />
                   Add task
                 </Button>
               </div>
 
-              {detail.tasks.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No tasks yet.</p>
+              {detail.stages.length === 0 && detail.ungrouped.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No milestones yet.</p>
               ) : (
-                <div className="flex flex-col gap-2">
-                  {detail.tasks.map((task) => (
-                    <TaskCard
-                      key={task.id}
-                      task={task}
-                      feedbackUrl={`/api/orgs/${orgSlug}/tasks/${task.id}/feedback`}
+                <div className="flex flex-col gap-3">
+                  {detail.stages.map((stage, i) => (
+                    <MilestoneCard
+                      key={stage.id}
+                      orgSlug={orgSlug}
+                      projectId={project.id}
+                      stage={stage}
+                      index={i}
                       onChanged={() => {
                         void loadDetail();
                         onChanged();
                       }}
                     />
                   ))}
+
+                  {detail.ungrouped.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <span className="text-xs font-medium text-muted-foreground">Other tasks</span>
+                      {detail.ungrouped.map((task) => (
+                        <TaskCard
+                          key={task.id}
+                          task={task}
+                          feedbackUrl={`/api/orgs/${orgSlug}/tasks/${task.id}/feedback`}
+                          onChanged={() => {
+                            void loadDetail();
+                            onChanged();
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -282,6 +339,188 @@ function ProjectCard({
         </CardContent>
       )}
     </Card>
+  );
+}
+
+function stageStatusBadge(status: string) {
+  switch (status) {
+    case "completed":
+      return (
+        <Badge variant="success">
+          <CheckCircle2 className="size-3" />
+          done
+        </Badge>
+      );
+    case "awaiting_review":
+      return (
+        <Badge variant="warning">
+          <Gavel className="size-3" />
+          needs review
+        </Badge>
+      );
+    case "in_progress":
+      return (
+        <Badge variant="warning">
+          <Loader2 className="size-3 animate-spin" />
+          working
+        </Badge>
+      );
+    case "skipped":
+      return <Badge variant="outline">skipped</Badge>;
+    default:
+      return <Badge variant="outline">queued</Badge>;
+  }
+}
+
+function MilestoneCard({
+  orgSlug,
+  projectId,
+  stage,
+  index,
+  onChanged,
+}: {
+  orgSlug: string;
+  projectId: string;
+  stage: Milestone;
+  index: number;
+  onChanged: () => void;
+}) {
+  return (
+    <div className="rounded-lg border bg-muted/20">
+      <div className="flex items-start gap-3 p-3">
+        <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-background text-xs font-semibold text-muted-foreground ring-1 ring-border">
+          {index + 1}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <Milestone className="size-4 shrink-0 text-muted-foreground" />
+            <span className="font-medium">{stage.title}</span>
+            {stage.gate === "review" ? (
+              <Badge variant="outline" className="text-[10px]">
+                <Gavel className="size-3" />
+                review gate
+              </Badge>
+            ) : (
+              <Badge variant="secondary" className="text-[10px]">
+                auto
+              </Badge>
+            )}
+            <span className="ml-auto">{stageStatusBadge(stage.status)}</span>
+          </div>
+          {stage.description && <p className="mt-1 text-sm text-muted-foreground">{stage.description}</p>}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2 px-3 pb-3">
+        {stage.summary && stage.status !== "in_progress" && (
+          <div className="rounded-md border bg-background/60 p-2.5 text-sm">
+            <div className="pb-1 text-xs font-medium text-muted-foreground">Milestone deliverable</div>
+            <Markdown>{stage.summary}</Markdown>
+          </div>
+        )}
+
+        {stage.reviewFeedback && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5 text-sm">
+            <div className="pb-1 text-xs font-medium text-muted-foreground">Board feedback</div>
+            <p className="whitespace-pre-wrap">{stage.reviewFeedback}</p>
+          </div>
+        )}
+
+        {stage.status === "awaiting_review" && (
+          <StageReview orgSlug={orgSlug} projectId={projectId} stageId={stage.id} onChanged={onChanged} />
+        )}
+
+        {stage.tasks.length > 0 && (
+          <div className="flex flex-col gap-2">
+            {stage.tasks.map((task) => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                feedbackUrl={`/api/orgs/${orgSlug}/tasks/${task.id}/feedback`}
+                onChanged={onChanged}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StageReview({
+  orgSlug,
+  projectId,
+  stageId,
+  onChanged,
+}: {
+  orgSlug: string;
+  projectId: string;
+  stageId: string;
+  onChanged: () => void;
+}) {
+  const [mode, setMode] = useState<"idle" | "changes">("idle");
+  const [feedback, setFeedback] = useState("");
+  const [pending, setPending] = useState(false);
+
+  async function submit(decision: "approve" | "request_changes") {
+    if (decision === "request_changes" && !feedback.trim()) {
+      toast.error("Describe the changes you'd like");
+      return;
+    }
+    setPending(true);
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/stages/${stageId}/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, feedback: feedback.trim() || undefined }),
+    });
+    const body = await res.json().catch(() => ({}));
+    setPending(false);
+    if (!res.ok) {
+      toast.error(body.error ?? "Could not submit review");
+      return;
+    }
+    toast.success(decision === "approve" ? "Milestone approved — moving on" : "Sent back for changes");
+    setMode("idle");
+    setFeedback("");
+    onChanged();
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-3">
+      <div className="flex items-center gap-2 text-sm font-medium text-warning">
+        <Gavel className="size-4" />
+        This milestone is waiting for your review
+      </div>
+      {mode === "idle" ? (
+        <div className="flex gap-2">
+          <Button size="sm" disabled={pending} onClick={() => submit("approve")}>
+            <CheckCircle2 />
+            Approve &amp; continue
+          </Button>
+          <Button size="sm" variant="outline" disabled={pending} onClick={() => setMode("changes")}>
+            Request changes
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <Textarea
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            rows={3}
+            placeholder="What should change before this milestone is approved?"
+            autoFocus
+          />
+          <div className="flex gap-2">
+            <Button size="sm" disabled={pending} onClick={() => submit("request_changes")}>
+              Send back for changes
+            </Button>
+            <Button size="sm" variant="ghost" disabled={pending} onClick={() => setMode("idle")}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -315,7 +554,7 @@ function CreateProjectDialog({
       toast.error(body.error ?? "Could not create project");
       return;
     }
-    toast.success("Project created — the manager is planning it into tasks");
+    toast.success("Project created — the manager is planning it into milestones");
     onClose(true);
   }
 
@@ -325,7 +564,8 @@ function CreateProjectDialog({
         <DialogHeader>
           <DialogTitle>New project</DialogTitle>
           <DialogDescription>
-            A bigger initiative. The project manager plans it into tasks and delivers each through the org.
+            A bigger initiative. The manager plans it into milestones and delivers each through the org — pausing at
+            review gates for your feedback.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex flex-col gap-4">
@@ -421,7 +661,10 @@ function AddTaskDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Add task to project</DialogTitle>
-          <DialogDescription>A task the project needs, assigned to an AI employee.</DialogDescription>
+          <DialogDescription>
+            A task the project needs, added to the current milestone (or a new follow-up milestone if the project has
+            finished).
+          </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">

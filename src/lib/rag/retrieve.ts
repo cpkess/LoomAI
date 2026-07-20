@@ -1,5 +1,6 @@
 import { and, cosineDistance, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 
+import { retrieval } from "@/lib/ai/generation";
 import { db } from "@/lib/db";
 import { collections, documentChunks, documents, type MessageSource } from "@/lib/db/schema";
 
@@ -11,8 +12,8 @@ export interface RetrievedContext {
   contextBlock: string | null;
 }
 
-const TOP_K = 6;
-const MIN_SIMILARITY = 0.2;
+const TOP_K = retrieval.topK;
+const MIN_SIMILARITY = retrieval.minSimilarity;
 
 /**
  * Retrieve the most relevant knowledge chunks for a query across the given

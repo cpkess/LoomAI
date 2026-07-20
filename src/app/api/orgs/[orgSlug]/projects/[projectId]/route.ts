@@ -1,9 +1,9 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 
 import { serializeTaskTree } from "@/lib/agents/serialize";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
-import { agents, projects } from "@/lib/db/schema";
+import { agents, projectStages, projects } from "@/lib/db/schema";
 
 export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug: string; projectId: string }> }) {
   try {
@@ -18,7 +18,29 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
     const manager = project.managerAgentId
       ? await db.query.agents.findFirst({ where: eq(agents.id, project.managerAgentId) })
       : null;
-    const tasks = await serializeTaskTree({ organizationId: ctx.org.id, projectId });
+
+    const [tasks, stageRows] = await Promise.all([
+      serializeTaskTree({ organizationId: ctx.org.id, projectId }),
+      db.query.projectStages.findMany({
+        where: eq(projectStages.projectId, projectId),
+        orderBy: asc(projectStages.orderIndex),
+      }),
+    ]);
+
+    // Group tasks under their milestone; tasks with no stage (legacy) fall into
+    // a separate bucket the UI renders as "Other tasks".
+    const stages = stageRows.map((s) => ({
+      id: s.id,
+      title: s.title,
+      description: s.description,
+      gate: s.gate,
+      status: s.status,
+      summary: s.summary,
+      reviewFeedback: s.reviewFeedback,
+      orderIndex: s.orderIndex,
+      tasks: tasks.filter((t) => t.stageId === s.id),
+    }));
+    const ungrouped = tasks.filter((t) => !t.stageId);
 
     return Response.json({
       project: {
@@ -32,6 +54,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
           ? { id: manager.id, name: manager.name, title: manager.title, avatarColor: manager.avatarColor }
           : null,
       },
+      stages,
+      ungrouped,
       tasks,
     });
   } catch (err) {

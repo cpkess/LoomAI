@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { resolveChatConfig } from "@/lib/agents/resolve";
 import { asDetailedModelError } from "@/lib/ai/errors";
+import { generation } from "@/lib/ai/generation";
 import { resolveChatModel } from "@/lib/ai/registry";
 import { buildAgentTools, describeAuthority, type AgentToolContext } from "@/lib/company/tools";
 import { AuthorizationError, errorResponse, requireUser } from "@/lib/auth/authorize";
@@ -15,6 +16,7 @@ import {
   workspaces,
   type MessageSource,
 } from "@/lib/db/schema";
+import { captureChatKnowledge } from "@/lib/rag/capture";
 import { retrieveContext } from "@/lib/rag/retrieve";
 
 export const maxDuration = 300;
@@ -93,6 +95,7 @@ export async function POST(req: Request) {
       model,
       system,
       messages: modelMessages,
+      temperature: generation.chat.temperature,
       ...(Object.keys(tools).length > 0 ? { tools, stopWhen: stepCountIs(6) } : {}),
       onFinish: async ({ text, usage }) => {
         await db.insert(messagesTable).values({
@@ -104,6 +107,18 @@ export async function POST(req: Request) {
           inputTokens: usage.inputTokens ?? null,
           outputTokens: usage.outputTokens ?? null,
         });
+        // Constant learning: a substantive answer from an AI employee is
+        // captured into the knowledge base (heuristic-gated + deduped, no extra
+        // LLM call) so future work can build on it.
+        if (config.agent) {
+          await captureChatKnowledge({
+            org,
+            agentName: config.agent.name,
+            question: userText,
+            answer: text,
+            conversationTitle: conversation.title,
+          }).catch((err) => console.error("chat knowledge capture failed", err));
+        }
       },
     });
 

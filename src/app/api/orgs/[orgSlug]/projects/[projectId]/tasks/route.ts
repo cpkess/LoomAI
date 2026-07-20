@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { getChiefAgent } from "@/lib/agents/chief";
-import { createAndEnqueueTask } from "@/lib/agents/engine";
+import { createAndEnqueueTask, resolveManualTaskStage } from "@/lib/agents/engine";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
 import { agents, projects } from "@/lib/db/schema";
@@ -39,17 +39,22 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
     }
     if (!coordinatorAgentId) return Response.json({ error: "No active AI employee to assign" }, { status: 400 });
 
+    // Attach the task to a milestone so it flows through the stage/gate system
+    // (this also reactivates a completed project with a follow-up milestone).
+    const stageId = await resolveManualTaskStage(projectId);
+
     const taskId = await createAndEnqueueTask({
       orgId: ctx.org.id,
       projectId,
+      stageId,
       title: parsed.data.title,
       description: parsed.data.description,
       coordinatorAgentId,
       createdByUserId: ctx.user.id,
     });
 
-    // A new task means the project is active again.
-    if (project.status === "completed") {
+    // A new task means the project is active again (legacy stage-less projects).
+    if (stageId === null && project.status === "completed") {
       await db.update(projects).set({ status: "in_progress", updatedAt: new Date() }).where(eq(projects.id, projectId));
     }
     return Response.json({ task: { id: taskId } }, { status: 201 });

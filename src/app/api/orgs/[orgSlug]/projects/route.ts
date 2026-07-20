@@ -5,7 +5,7 @@ import { getChiefAgent } from "@/lib/agents/chief";
 import { enqueueProject } from "@/lib/agents/engine";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
-import { agentTasks, agents, projects } from "@/lib/db/schema";
+import { agentTasks, agents, projectStages, projects } from "@/lib/db/schema";
 
 const createSchema = z.object({
   title: z.string().min(1).max(200),
@@ -64,9 +64,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
       limit: 50,
     });
     const projectIds = rows.map((p) => p.id);
-    const tasks = projectIds.length
-      ? await db.query.agentTasks.findMany({ where: inArray(agentTasks.projectId, projectIds) })
-      : [];
+    const [tasks, stages] = await Promise.all([
+      projectIds.length
+        ? db.query.agentTasks.findMany({ where: inArray(agentTasks.projectId, projectIds) })
+        : Promise.resolve([]),
+      projectIds.length
+        ? db.query.projectStages.findMany({ where: inArray(projectStages.projectId, projectIds) })
+        : Promise.resolve([]),
+    ]);
     const managerIds = [...new Set(rows.flatMap((p) => (p.managerAgentId ? [p.managerAgentId] : [])))];
     const managers = managerIds.length
       ? await db.query.agents.findMany({ where: inArray(agents.id, managerIds) })
@@ -76,6 +81,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
     return Response.json({
       projects: rows.map((p) => {
         const projTasks = tasks.filter((t) => t.projectId === p.id);
+        const projStages = stages.filter((s) => s.projectId === p.id);
         const manager = p.managerAgentId ? managersById.get(p.managerAgentId) : undefined;
         return {
           id: p.id,
@@ -89,6 +95,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
             : null,
           taskCount: projTasks.length,
           doneCount: projTasks.filter((t) => t.status === "completed" || t.status === "failed").length,
+          stageCount: projStages.length,
+          stageDoneCount: projStages.filter((s) => s.status === "completed" || s.status === "skipped").length,
+          awaitingReview: projStages.some((s) => s.status === "awaiting_review"),
         };
       }),
     });

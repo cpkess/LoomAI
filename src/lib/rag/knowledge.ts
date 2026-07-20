@@ -1,9 +1,10 @@
-import { and, eq } from "drizzle-orm";
+import { and, cosineDistance, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { collections, documents } from "@/lib/db/schema";
+import { collections, documentChunks, documents } from "@/lib/db/schema";
 import { slugify } from "@/lib/utils";
 
+import { embedTexts } from "./embed";
 import { enqueueDocument } from "./ingest";
 
 // Shared knowledge-base helpers. Knowledge is org-wide: every AI employee can
@@ -41,9 +42,55 @@ export async function defaultKnowledgeCollectionId(orgId: string): Promise<strin
   return created.id;
 }
 
+// Above this cosine similarity to an existing chunk, new knowledge is treated
+// as already-known and skipped, so auto-capture keeps the base growing without
+// filling it with near-duplicates. Programmatic — no LLM judgement needed.
+const DEDUP_SIMILARITY = 0.94;
+
+/**
+ * Is this content already represented in the org's knowledge base? Embeds the
+ * content once and checks the closest existing chunk (within collections that
+ * share an embedding model). Returns false whenever nothing has been ingested
+ * yet or the embedding model is unavailable — dedup must never block capture.
+ */
+export async function isDuplicateKnowledge(orgId: string, content: string): Promise<boolean> {
+  const probe = content.trim().slice(0, 2000);
+  if (!probe) return false;
+
+  const orgCollections = await db.query.collections.findMany({
+    where: eq(collections.organizationId, orgId),
+    columns: { id: true, embeddingModelId: true },
+  });
+  const groups = new Map<string, string[]>();
+  for (const c of orgCollections) {
+    if (!c.embeddingModelId) continue;
+    groups.set(c.embeddingModelId, [...(groups.get(c.embeddingModelId) ?? []), c.id]);
+  }
+  if (groups.size === 0) return false;
+
+  for (const [embeddingModelId, collectionIds] of groups) {
+    let vector: number[];
+    try {
+      vector = (await embedTexts(embeddingModelId, [probe])).vectors[0];
+    } catch {
+      continue; // model unavailable — don't block capture
+    }
+    const similarity = sql<number>`1 - (${cosineDistance(documentChunks.embedding, vector)})`;
+    const [row] = await db
+      .select({ similarity })
+      .from(documentChunks)
+      .where(and(inArray(documentChunks.collectionId, collectionIds), isNotNull(documentChunks.embedding)))
+      .orderBy(desc(similarity))
+      .limit(1);
+    if (row && row.similarity >= DEDUP_SIMILARITY) return true;
+  }
+  return false;
+}
+
 /**
  * File a piece of text into the knowledge base as a markdown document and
- * kick off ingestion (chunk → embed → pgvector). Returns the document id.
+ * kick off ingestion (chunk → embed → pgvector). Returns the new document id,
+ * or null when `dedupe` is set and equivalent knowledge already exists.
  */
 export async function addTextToKnowledge(options: {
   orgId: string;
@@ -51,7 +98,13 @@ export async function addTextToKnowledge(options: {
   title: string;
   content: string;
   userId?: string | null;
-}): Promise<string> {
+  /** Skip storing when near-identical knowledge already exists. */
+  dedupe?: boolean;
+}): Promise<string | null> {
+  if (options.dedupe && (await isDuplicateKnowledge(options.orgId, options.content))) {
+    return null;
+  }
+
   const filename = `${slugify(options.title) || "note"}.md`;
   const body = `# ${options.title}\n\n${options.content}\n`;
   const buffer = Buffer.from(body, "utf8");
