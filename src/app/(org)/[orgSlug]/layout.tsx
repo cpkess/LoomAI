@@ -1,5 +1,5 @@
 import { and, count, eq, inArray, isNull } from "drizzle-orm";
-import { BookOpen, Bot, ClipboardList, FolderKanban, Gavel, LayoutDashboard, MessagesSquare, Network, ScrollText, Settings, Users } from "lucide-react";
+import { BookOpen, ClipboardList, FolderKanban, Gavel, LayoutDashboard, MessagesSquare, Network, ScrollText, Settings, Users } from "lucide-react";
 
 import { requireOrgPage, roleAtLeast } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
@@ -70,10 +70,6 @@ export default async function OrgLayout({
             <NavLink href={`${base}/people`}>
               <Network />
               People &amp; org chart
-            </NavLink>
-            <NavLink href={`${base}/agents`}>
-              <Bot />
-              AI employees
             </NavLink>
             <NavLink href={`${base}/projects`}>
               <FolderKanban />

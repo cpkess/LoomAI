@@ -5,7 +5,10 @@ import { useRouter } from "next/navigation";
 import { Pause, Pencil, Play, Trash2, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 
+import type { OrgChart } from "@/lib/agents/orgchart";
+import { initials } from "@/lib/utils";
 import { AgentAvatar } from "@/components/agents/agent-avatar";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,7 +23,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+
+import { OrgChartView } from "./org-chart-view";
 
 export interface AgentRow {
   id: string;
@@ -36,6 +42,13 @@ export interface AgentRow {
   workspaceIds: string[];
   collectionIds: string[];
   permissions: string[];
+}
+
+export interface HumanRow {
+  id: string;
+  name: string;
+  title: string | null;
+  role: string;
 }
 
 const PERMISSION_OPTIONS = [
@@ -55,24 +68,26 @@ interface Option {
 
 const NONE = "__none__";
 
-export function AgentsView({
+export function PeopleView({
   orgSlug,
+  orgName,
   canManage,
+  humans,
   agents,
+  chart,
   departments,
-  collections,
   prompts,
   models,
-  humans,
 }: {
   orgSlug: string;
+  orgName: string;
   canManage: boolean;
+  humans: HumanRow[];
   agents: AgentRow[];
+  chart: OrgChart;
   departments: Option[];
-  collections: Option[];
   prompts: Option[];
   models: Option[];
-  humans: Option[];
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<AgentRow | null>(null);
@@ -104,12 +119,13 @@ export function AgentsView({
   }
 
   return (
-    <>
+    <div className="flex flex-col gap-6 p-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold">AI employees</h1>
+          <h1 className="text-xl font-semibold">People &amp; org chart</h1>
           <p className="text-sm text-muted-foreground">
-            Hire, configure, and manage the AI members of your organization.
+            {orgName} is a hybrid company: {humans.length} human{humans.length === 1 ? "" : "s"} and {agents.length} AI
+            employee{agents.length === 1 ? "" : "s"} working side by side.
           </p>
         </div>
         {canManage && (
@@ -120,70 +136,114 @@ export function AgentsView({
         )}
       </div>
 
-      {agents.length === 0 && (
-        <Card>
-          <CardContent className="py-10 text-center text-sm text-muted-foreground">
-            No AI employees yet. {canManage ? "Hire your first one to get started." : "Ask an organization admin to hire one."}
-          </CardContent>
-        </Card>
-      )}
+      <Tabs defaultValue="chart">
+        <TabsList>
+          <TabsTrigger value="chart">Org chart</TabsTrigger>
+          <TabsTrigger value="directory">Directory</TabsTrigger>
+        </TabsList>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {agents.map((agent) => (
-          <Card key={agent.id} className="py-4">
-            <CardContent className="flex flex-col gap-3 px-4">
-              <div className="flex items-center gap-3">
-                <AgentAvatar name={agent.name} color={agent.avatarColor} size="lg" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">{agent.name}</div>
-                  <div className="truncate text-sm text-muted-foreground">{agent.title}</div>
-                </div>
-                <Badge variant={agent.status === "active" ? "success" : "outline"}>{agent.status}</Badge>
-              </div>
-              <div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
-                {agent.workspaceIds.length > 0 ? (
-                  agent.workspaceIds.map((id) => (
-                    <Badge key={id} variant="secondary">
-                      {departments.find((d) => d.id === id)?.name ?? "?"}
-                    </Badge>
-                  ))
-                ) : (
-                  <span>Not staffed in any department</span>
-                )}
-              </div>
-              {canManage && (
-                <div className="flex gap-1">
-                  <Button variant="outline" size="sm" onClick={() => setEditing(agent)}>
-                    <Pencil />
-                    Edit
-                  </Button>
-                  {agent.status === "active" ? (
-                    <Button variant="outline" size="sm" onClick={() => setStatus(agent, "paused")}>
-                      <Pause />
-                      Pause
-                    </Button>
-                  ) : (
-                    <Button variant="outline" size="sm" onClick={() => setStatus(agent, "active")}>
-                      <Play />
-                      Resume
-                    </Button>
-                  )}
-                  <Button variant="ghost" size="sm" className="ml-auto text-destructive" onClick={() => remove(agent)}>
-                    <Trash2 />
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+        <TabsContent value="chart" className="pt-2">
+          <OrgChartView chart={chart} />
+        </TabsContent>
+
+        <TabsContent value="directory" className="flex flex-col gap-6 pt-2">
+          <section className="flex flex-col gap-3">
+            <h2 className="text-sm font-medium text-muted-foreground">Humans</h2>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {humans.map((person) => (
+                <Card key={person.id} className="py-4">
+                  <CardContent className="flex items-center gap-3 px-4">
+                    <Avatar className="size-10">
+                      <AvatarFallback>{initials(person.name)}</AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium">{person.name}</div>
+                      <div className="truncate text-sm text-muted-foreground">
+                        {person.title ?? person.role.replace("_", " ")}
+                      </div>
+                    </div>
+                    <Badge variant="secondary">human</Badge>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </section>
+
+          <section className="flex flex-col gap-3">
+            <h2 className="text-sm font-medium text-muted-foreground">AI employees</h2>
+            {agents.length === 0 && (
+              <Card>
+                <CardContent className="py-10 text-center text-sm text-muted-foreground">
+                  No AI employees yet.{" "}
+                  {canManage ? "Hire your first one to get started." : "Ask an organization admin to hire one."}
+                </CardContent>
+              </Card>
+            )}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {agents.map((agent) => (
+                <Card key={agent.id} className="py-4">
+                  <CardContent className="flex flex-col gap-3 px-4">
+                    <div className="flex items-center gap-3">
+                      <AgentAvatar name={agent.name} color={agent.avatarColor} size="lg" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium">{agent.name}</div>
+                        <div className="truncate text-sm text-muted-foreground">{agent.title}</div>
+                      </div>
+                      <Badge variant={agent.status === "active" ? "success" : "outline"}>
+                        {agent.status === "active" ? "AI · active" : "AI · paused"}
+                      </Badge>
+                    </div>
+                    <div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
+                      {agent.workspaceIds.length > 0 ? (
+                        agent.workspaceIds.map((id) => (
+                          <Badge key={id} variant="secondary">
+                            {departments.find((d) => d.id === id)?.name ?? "?"}
+                          </Badge>
+                        ))
+                      ) : (
+                        <span>Not staffed in any department</span>
+                      )}
+                    </div>
+                    {canManage && (
+                      <div className="flex gap-1">
+                        <Button variant="outline" size="sm" onClick={() => setEditing(agent)}>
+                          <Pencil />
+                          Edit
+                        </Button>
+                        {agent.status === "active" ? (
+                          <Button variant="outline" size="sm" onClick={() => setStatus(agent, "paused")}>
+                            <Pause />
+                            Pause
+                          </Button>
+                        ) : (
+                          <Button variant="outline" size="sm" onClick={() => setStatus(agent, "active")}>
+                            <Play />
+                            Resume
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="ml-auto text-destructive"
+                          onClick={() => remove(agent)}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </section>
+        </TabsContent>
+      </Tabs>
 
       {(hiring || editing) && (
         <AgentDialog
           orgSlug={orgSlug}
           agent={editing}
           departments={departments}
-          collections={collections}
           prompts={prompts}
           models={models}
           humans={humans}
@@ -195,7 +255,7 @@ export function AgentsView({
           }}
         />
       )}
-    </>
+    </div>
   );
 }
 
@@ -203,7 +263,6 @@ function AgentDialog({
   orgSlug,
   agent,
   departments,
-  collections,
   prompts,
   models,
   humans,
@@ -213,10 +272,9 @@ function AgentDialog({
   orgSlug: string;
   agent: AgentRow | null;
   departments: Option[];
-  collections: Option[];
   prompts: Option[];
   models: Option[];
-  humans: Option[];
+  humans: HumanRow[];
   otherAgents: AgentRow[];
   onClose: (saved: boolean) => void;
 }) {
@@ -229,7 +287,6 @@ function AgentDialog({
     agent?.reportsToUserId ? `user:${agent.reportsToUserId}` : agent?.reportsToAgentId ? `agent:${agent.reportsToAgentId}` : NONE
   );
   const [workspaceIds, setWorkspaceIds] = useState<string[]>(agent?.workspaceIds ?? []);
-  const [collectionIds, setCollectionIds] = useState<string[]>(agent?.collectionIds ?? []);
   const [permissions, setPermissions] = useState<string[]>(agent?.permissions ?? []);
   const [pending, setPending] = useState(false);
 
@@ -249,7 +306,6 @@ function AgentDialog({
       reportsToUserId: manager.startsWith("user:") ? manager.slice(5) : null,
       reportsToAgentId: manager.startsWith("agent:") ? manager.slice(6) : null,
       workspaceIds,
-      collectionIds,
       permissions,
     };
     const res = await fetch(agent ? `/api/orgs/${orgSlug}/agents/${agent.id}` : `/api/orgs/${orgSlug}/agents`, {
@@ -360,16 +416,17 @@ function AgentDialog({
               placeholder="You are Atlas, a pragmatic principal engineer who values simple designs…"
               rows={3}
             />
-            <p className="text-xs text-muted-foreground">
-              Takes precedence over the library prompt when both are set.
-            </p>
+            <p className="text-xs text-muted-foreground">Takes precedence over the library prompt when both are set.</p>
           </div>
 
           <div className="flex flex-col gap-2">
             <Label>Departments</Label>
             <div className="flex flex-wrap gap-2">
               {departments.map((d) => (
-                <label key={d.id} className="flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-sm has-checked:border-primary has-checked:bg-accent">
+                <label
+                  key={d.id}
+                  className="flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-sm has-checked:border-primary has-checked:bg-accent"
+                >
                   <input
                     type="checkbox"
                     className="accent-primary"

@@ -2,6 +2,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { generateText, stepCountIs } from "ai";
 import { z } from "zod";
 
+import { asDetailedModelError, isRecoverableModelError } from "@/lib/ai/errors";
 import { resolveChatModel } from "@/lib/ai/registry";
 import { buildAgentTools, describeAuthority } from "@/lib/company/tools";
 import { db } from "@/lib/db";
@@ -123,7 +124,7 @@ async function agentReply(
   const runtime = await resolveAgentRuntime(agent, org);
   const modelDbId = runtime.modelDbId ?? (await fallbackModelId());
   if (!modelDbId) throw new Error("No AI model available — register a provider and enable a chat model");
-  const { model } = await resolveChatModel(modelDbId);
+  const { model, modelRow } = await resolveChatModel(modelDbId);
 
   const toolContext = { actions: options.actions ?? [] };
   const tools = options.withTools ? buildAgentTools(agent, org, toolContext) : {};
@@ -134,13 +135,37 @@ async function agentReply(
     .filter(Boolean)
     .join("\n\n");
 
-  const { text } = await generateText({
-    model,
-    system,
-    prompt,
-    ...(Object.keys(tools).length > 0 ? { tools, stopWhen: stepCountIs(6) } : {}),
-  });
-  return text;
+  const hasTools = Object.keys(tools).length > 0;
+
+  // Attempt the call with tools when requested. Many local models don't
+  // support tool-calling and reject the request (typically HTTP 400 "Bad
+  // Request"); rather than fail the whole task, we retry once without tools so
+  // the agent can still produce a text deliverable. Only if the tool-less
+  // attempt also fails do we surface a detailed error.
+  if (hasTools) {
+    try {
+      const { text } = await generateText({ model, system, prompt, tools, stopWhen: stepCountIs(6) });
+      return text;
+    } catch (err) {
+      if (!isRecoverableModelError(err)) throw asDetailedModelError(err, modelRow.displayName);
+      // Fall through to a plain-text attempt without tools.
+      const note =
+        "\n\n(Note: your tools are unavailable for this step — the model could not use them. Do the task directly and describe precisely what actions still need to be taken.)";
+      try {
+        const { text } = await generateText({ model, system, prompt: prompt + note });
+        return text;
+      } catch (err2) {
+        throw asDetailedModelError(err2, modelRow.displayName);
+      }
+    }
+  }
+
+  try {
+    const { text } = await generateText({ model, system, prompt });
+    return text;
+  } catch (err) {
+    throw asDetailedModelError(err, modelRow.displayName);
+  }
 }
 
 /** Render taken actions as an explicit block appended to a task result. */

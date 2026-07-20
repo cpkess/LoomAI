@@ -3,6 +3,7 @@ import { stepCountIs, streamText, type UIMessage } from "ai";
 import { z } from "zod";
 
 import { resolveChatConfig } from "@/lib/agents/resolve";
+import { asDetailedModelError } from "@/lib/ai/errors";
 import { resolveChatModel } from "@/lib/ai/registry";
 import { buildAgentTools, describeAuthority, type AgentToolContext } from "@/lib/company/tools";
 import { AuthorizationError, errorResponse, requireUser } from "@/lib/auth/authorize";
@@ -118,8 +119,7 @@ export async function POST(req: Request) {
       },
       onError: (error) => {
         console.error("chat stream error", error);
-        const message = error instanceof Error ? error.message : String(error);
-        return `The model request failed: ${message}`;
+        return asDetailedModelError(error).message;
       },
     });
   } catch (err) {

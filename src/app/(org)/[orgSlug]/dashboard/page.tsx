@@ -40,7 +40,7 @@ export default async function DashboardPage({ params }: { params: Promise<{ orgS
 
   const stats = [
     { label: "Members", value: memberCount.value, icon: Users, href: `/${ctx.org.slug}/members` },
-    { label: "AI employees", value: agentCount.value, icon: Bot, href: `/${ctx.org.slug}/agents` },
+    { label: "AI employees", value: agentCount.value, icon: Bot, href: `/${ctx.org.slug}/people` },
     { label: "Departments", value: orgWorkspaces.length, icon: MessagesSquare, href: `/${ctx.org.slug}/people` },
     { label: "Documents", value: documentCount.value, icon: FileText, href: `/${ctx.org.slug}/knowledge` },
     { label: "Conversations", value: conversationCount.value, icon: BookOpen, href: `/${ctx.org.slug}/dashboard` },
@@ -104,7 +104,7 @@ export default async function DashboardPage({ params }: { params: Promise<{ orgS
             <ol className="flex list-decimal flex-col gap-2 pl-4 text-sm text-muted-foreground">
               <li>Ask a platform admin to register an AI provider (LM Studio, Ollama, OpenAI-compatible…).</li>
               <li>
-                <Link href={`/${ctx.org.slug}/agents`} className="text-foreground underline underline-offset-4">
+                <Link href={`/${ctx.org.slug}/people`} className="text-foreground underline underline-offset-4">
                   Hire your first AI employee
                 </Link>{" "}
                 and place them in the org chart.
