@@ -1,4 +1,4 @@
-import { index, integer, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 import { users } from "./auth";
 import { organizations } from "./orgs";
@@ -62,6 +62,9 @@ export const projectStages = pgTable(
     description: text("description"),
     gate: stageGate("gate").notNull().default("auto"),
     status: stageStatus("status").notNull().default("pending"),
+    // A branch milestone is one the Board's feedback created — a formal
+    // revision step inserted into the plan, rendered distinctly in the UI.
+    isBranch: boolean("is_branch").notNull().default(false),
     // The milestone deliverable summary once its tasks finish.
     summary: text("summary"),
     // The Board's most recent review note (approval or change request).

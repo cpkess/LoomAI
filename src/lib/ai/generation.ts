@@ -25,27 +25,31 @@ export interface GenSettings {
   maxOutputTokens?: number;
 }
 
+// Output-token budgets assume a ~32k-context local model (the default local
+// setup LoomAI targets). With that much room the model can produce genuinely
+// long-form work and comprehensive, sectioned summaries; a smaller context
+// window should dial these down via the env overrides.
+
 /** Per-call-type generation settings. */
 export const generation = {
   /** Deterministic structured planning (delegation plans, project milestones). */
-  plan: { temperature: num("LOOMAI_TEMP_PLAN", 0.3), maxOutputTokens: num("LOOMAI_MAXTOK_PLAN", 1400) },
+  plan: { temperature: num("LOOMAI_TEMP_PLAN", 0.3), maxOutputTokens: num("LOOMAI_MAXTOK_PLAN", 2000) },
   /** Open-ended execution — the actual work an employee delivers. */
-  work: { temperature: num("LOOMAI_TEMP_WORK", 0.5), maxOutputTokens: num("LOOMAI_MAXTOK_WORK", 3000) },
-  /** Executive summaries — concise and stable. */
-  summary: { temperature: num("LOOMAI_TEMP_SUMMARY", 0.3), maxOutputTokens: num("LOOMAI_MAXTOK_SUMMARY", 1600) },
+  work: { temperature: num("LOOMAI_TEMP_WORK", 0.5), maxOutputTokens: num("LOOMAI_MAXTOK_WORK", 4000) },
+  /** Summaries — stable, and roomy enough to be comprehensive. */
+  summary: { temperature: num("LOOMAI_TEMP_SUMMARY", 0.3), maxOutputTokens: num("LOOMAI_MAXTOK_SUMMARY", 3000) },
   /** Knowledge extraction — factual, near-deterministic. */
-  extract: { temperature: num("LOOMAI_TEMP_EXTRACT", 0.2), maxOutputTokens: num("LOOMAI_MAXTOK_EXTRACT", 1600) },
+  extract: { temperature: num("LOOMAI_TEMP_EXTRACT", 0.2), maxOutputTokens: num("LOOMAI_MAXTOK_EXTRACT", 2000) },
   /** Interactive chat — a bit more expressive. */
   chat: { temperature: num("LOOMAI_TEMP_CHAT", 0.6) } as GenSettings,
 } satisfies Record<string, GenSettings>;
 
 /**
- * Retrieval context budget. A 27B model has the context window and reasoning
- * to make use of more grounding, so we pull more chunks than a tiny model
- * would tolerate.
+ * Retrieval context budget. A 32k-context model can ground on a lot more
+ * evidence, so we pull more chunks than a small-context model would tolerate.
  */
 export const retrieval = {
-  topK: Math.round(num("LOOMAI_RETRIEVAL_TOPK", 8)),
+  topK: Math.round(num("LOOMAI_RETRIEVAL_TOPK", 12)),
   minSimilarity: num("LOOMAI_RETRIEVAL_MIN_SIM", 0.2),
 };
 

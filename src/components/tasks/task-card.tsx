@@ -86,12 +86,15 @@ export function TaskCard({
   feedbackUrl,
   onChanged,
   defaultOpen = false,
+  allowFeedback = true,
 }: {
   task: TaskItem;
   /** Endpoint the "Send feedback & revise" button POSTs { message } to. */
   feedbackUrl: string;
   onChanged: () => void;
   defaultOpen?: boolean;
+  /** Show the per-task feedback box (off in projects, where feedback is per-milestone). */
+  allowFeedback?: boolean;
 }) {
   const updates = task.updates ?? [];
   const [open, setOpen] = useState(defaultOpen);
@@ -204,7 +207,7 @@ export function TaskCard({
               </div>
             )}
 
-            {finished && !working && (
+            {allowFeedback && finished && !working && (
               <div className="flex flex-col gap-2 rounded-md border bg-muted/20 p-3">
                 <div className="text-xs font-medium text-muted-foreground">
                   Not quite right? Reply to {task.agent?.name ?? "the coordinator"} and they&apos;ll revise the result.

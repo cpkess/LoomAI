@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, FolderKanban, Gavel, Loader2, Milestone, Plus } from "lucide-react";
+import { CheckCircle2, FolderKanban, Gavel, GitBranch, Loader2, Milestone, MessageSquareReply, Plus } from "lucide-react";
 import { toast } from "sonner";
 
+import { cn } from "@/lib/utils";
 import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { Markdown } from "@/components/chat/markdown";
 import { OutputActions } from "@/components/output/output-actions";
@@ -47,6 +48,7 @@ interface Milestone {
   summary: string | null;
   reviewFeedback: string | null;
   orderIndex: number;
+  isBranch: boolean;
   tasks: TaskItem[];
 }
 
@@ -272,11 +274,18 @@ function ProjectCard({
                 <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm">
                   <div className="pb-1 text-xs font-medium text-muted-foreground">Project summary</div>
                   <Markdown>{project.summary ?? detail.summary ?? ""}</Markdown>
-                  <OutputActions
-                    className="mt-2"
-                    text={project.summary ?? detail.summary ?? ""}
-                    defaultTitle={project.title}
-                  />
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <OutputActions text={project.summary ?? detail.summary ?? ""} defaultTitle={project.title} />
+                    <MilestoneFeedback
+                      orgSlug={orgSlug}
+                      projectId={project.id}
+                      label="Give project feedback"
+                      onChanged={() => {
+                        void loadDetail();
+                        onChanged();
+                      }}
+                    />
+                  </div>
                 </div>
               )}
 
@@ -391,16 +400,27 @@ function MilestoneCard({
   index: number;
   onChanged: () => void;
 }) {
+  const completed = stage.status === "completed";
   return (
-    <div className="rounded-lg border bg-muted/20">
+    <div className={cn("rounded-lg border bg-muted/20", stage.isBranch && "border-primary/40 bg-primary/5")}>
       <div className="flex items-start gap-3 p-3">
         <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-background text-xs font-semibold text-muted-foreground ring-1 ring-border">
           {index + 1}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <Milestone className="size-4 shrink-0 text-muted-foreground" />
+            {stage.isBranch ? (
+              <GitBranch className="size-4 shrink-0 text-primary" />
+            ) : (
+              <Milestone className="size-4 shrink-0 text-muted-foreground" />
+            )}
             <span className="font-medium">{stage.title}</span>
+            {stage.isBranch && (
+              <Badge variant="secondary" className="text-[10px]">
+                <GitBranch className="size-3" />
+                feedback branch
+              </Badge>
+            )}
             {stage.gate === "review" ? (
               <Badge variant="outline" className="text-[10px]">
                 <Gavel className="size-3" />
@@ -413,7 +433,7 @@ function MilestoneCard({
             )}
             <span className="ml-auto">{stageStatusBadge(stage.status)}</span>
           </div>
-          {stage.description && <p className="mt-1 text-sm text-muted-foreground">{stage.description}</p>}
+          {stage.description && <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{stage.description}</p>}
         </div>
       </div>
 
@@ -445,10 +465,86 @@ function MilestoneCard({
                 task={task}
                 feedbackUrl={`/api/orgs/${orgSlug}/tasks/${task.id}/feedback`}
                 onChanged={onChanged}
+                allowFeedback={false}
               />
             ))}
           </div>
         )}
+
+        {completed && (
+          <MilestoneFeedback orgSlug={orgSlug} projectId={projectId} stageId={stage.id} onChanged={onChanged} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Give feedback on a completed milestone or project — creates a new branch step to address it. */
+function MilestoneFeedback({
+  orgSlug,
+  projectId,
+  stageId,
+  label = "Request a change",
+  onChanged,
+}: {
+  orgSlug: string;
+  projectId: string;
+  stageId?: string;
+  label?: string;
+  onChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  const [pending, setPending] = useState(false);
+
+  async function submit() {
+    if (!message.trim()) return;
+    setPending(true);
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: message.trim(), ...(stageId ? { afterStageId: stageId } : {}) }),
+    });
+    const body = await res.json().catch(() => ({}));
+    setPending(false);
+    if (!res.ok) {
+      toast.error(body.error ?? "Could not submit feedback");
+      return;
+    }
+    toast.success("Added a revision branch to address your feedback");
+    setMessage("");
+    setOpen(false);
+    onChanged();
+  }
+
+  if (!open) {
+    return (
+      <Button variant="outline" size="sm" className="self-start" onClick={() => setOpen(true)}>
+        <MessageSquareReply />
+        {label}
+      </Button>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2 rounded-md border p-3">
+      <div className="text-xs font-medium text-muted-foreground">
+        Your feedback becomes a new branch milestone that addresses it and comes back for your review.
+      </div>
+      <Textarea
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        rows={3}
+        placeholder="e.g. Add a rollback plan and tighten the cost estimates."
+        autoFocus
+      />
+      <div className="flex gap-2">
+        <Button size="sm" disabled={pending || !message.trim()} onClick={() => void submit()}>
+          <GitBranch />
+          {pending ? "Adding…" : "Create branch step"}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={pending} onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
       </div>
     </div>
   );
@@ -486,7 +582,7 @@ function StageReview({
       toast.error(body.error ?? "Could not submit review");
       return;
     }
-    toast.success(decision === "approve" ? "Milestone approved — moving on" : "Sent back for changes");
+    toast.success(decision === "approve" ? "Milestone approved — moving on" : "Added a revision branch to address your changes");
     setMode("idle");
     setFeedback("");
     onChanged();

@@ -38,6 +38,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
       summary: s.summary,
       reviewFeedback: s.reviewFeedback,
       orderIndex: s.orderIndex,
+      isBranch: s.isBranch,
       tasks: tasks.filter((t) => t.stageId === s.id),
     }));
     const ungrouped = tasks.filter((t) => !t.stageId);
