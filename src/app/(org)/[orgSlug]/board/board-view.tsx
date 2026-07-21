@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Gavel, Inbox, Loader2, Mail, MailOpen, X } from "lucide-react";
+import { Check, Gavel, Inbox, Lightbulb, Loader2, Mail, MailOpen, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -39,6 +39,11 @@ interface EmailItem {
   createdAt: string;
 }
 
+/** Recommendations are Board proposals whose type is prefixed `recommend_`. */
+function isRec(type: string): boolean {
+  return type.startsWith("recommend_");
+}
+
 function StatusBadge({ status }: { status: string }) {
   switch (status) {
     case "executed":
@@ -57,6 +62,7 @@ export function BoardView({ orgSlug, isBoardMember }: { orgSlug: string; isBoard
   const [actions, setActions] = useState<ActionItem[] | null>(null);
   const [emails, setEmails] = useState<EmailItem[] | null>(null);
   const [deciding, setDeciding] = useState<string | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
 
   const load = useCallback(async () => {
     const [aRes, eRes] = await Promise.all([
@@ -95,6 +101,27 @@ export function BoardView({ orgSlug, isBoardMember }: { orgSlug: string; isBoard
     router.refresh();
   }
 
+  async function suggest() {
+    setSuggesting(true);
+    const res = await fetch(`/api/orgs/${orgSlug}/recommendations/generate`, { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    setSuggesting(false);
+    if (!res.ok) {
+      toast.error(body.error ?? "Could not generate recommendations");
+      return;
+    }
+    if (!body.learnedEnough) {
+      toast.info("Recommendations unlock as your company's knowledge base grows. Keep working — and add knowledge.");
+      return;
+    }
+    if ((body.created ?? 0) === 0) {
+      toast.info("No new recommendations right now — review the pending ones first.");
+      return;
+    }
+    toast.success(`${body.created} new recommendation${body.created === 1 ? "" : "s"} from your CEO`);
+    void load();
+  }
+
   const pending = actions?.filter((a) => a.status === "pending_approval") ?? [];
   const history = actions?.filter((a) => a.status !== "pending_approval") ?? [];
   const unread = emails?.filter((e) => !e.read).length ?? 0;
@@ -104,7 +131,8 @@ export function BoardView({ orgSlug, isBoardMember }: { orgSlug: string; isBoard
       <div>
         <h1 className="text-xl font-semibold">Board room</h1>
         <p className="text-sm text-muted-foreground">
-          Your AI employees email their finished task outputs here, and route policy-gated actions to you for approval.
+          Your AI employees email their finished task outputs here, route policy-gated actions to you for approval, and —
+          once the company has learned enough — propose new projects and deliverables for you to greenlight.
         </p>
       </div>
 
@@ -145,9 +173,17 @@ export function BoardView({ orgSlug, isBoardMember }: { orgSlug: string; isBoard
 
           <TabsContent value="approvals" className="flex flex-col gap-4 pt-3">
             <div className="flex flex-col gap-3">
-              <h2 className="text-sm font-medium text-muted-foreground">
-                Awaiting approval {pending.length > 0 && <Badge variant="warning">{pending.length}</Badge>}
-              </h2>
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-sm font-medium text-muted-foreground">
+                  Awaiting approval {pending.length > 0 && <Badge variant="warning">{pending.length}</Badge>}
+                </h2>
+                {isBoardMember && (
+                  <Button size="sm" variant="outline" disabled={suggesting} onClick={suggest}>
+                    {suggesting ? <Loader2 className="animate-spin" /> : <Lightbulb />}
+                    Suggest next steps
+                  </Button>
+                )}
+              </div>
               {pending.length === 0 && (
                 <Card>
                   <CardContent className="flex flex-col items-center gap-2 py-8 text-center text-sm text-muted-foreground">
@@ -175,14 +211,28 @@ export function BoardView({ orgSlug, isBoardMember }: { orgSlug: string; isBoard
                       </div>
                       <StatusBadge status={action.status} />
                     </div>
-                    <pre className="overflow-x-auto rounded-md bg-muted/40 p-3 text-xs">
-                      {JSON.stringify(action.payload, null, 2)}
-                    </pre>
+                    {isRec(action.type) ? (
+                      <div className="flex flex-col gap-2 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm">
+                        {typeof action.payload.description === "string" && (
+                          <p className="whitespace-pre-wrap">{action.payload.description}</p>
+                        )}
+                        {typeof action.payload.rationale === "string" && action.payload.rationale && (
+                          <p className="text-xs text-muted-foreground">
+                            <span className="font-medium">Why: </span>
+                            {action.payload.rationale}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <pre className="overflow-x-auto rounded-md bg-muted/40 p-3 text-xs">
+                        {JSON.stringify(action.payload, null, 2)}
+                      </pre>
+                    )}
                     {isBoardMember ? (
                       <div className="flex gap-2">
                         <Button size="sm" disabled={deciding === action.id} onClick={() => decide(action, true)}>
                           <Check />
-                          Approve &amp; execute
+                          {isRec(action.type) ? "Approve & start" : "Approve & execute"}
                         </Button>
                         <Button
                           size="sm"

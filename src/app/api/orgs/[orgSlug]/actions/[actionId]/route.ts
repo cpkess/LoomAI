@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
+import { acceptRecommendation, isRecommendation } from "@/lib/agents/recommend";
 import { decideAction } from "@/lib/company/actions";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
@@ -22,7 +23,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
     });
     if (!action) return Response.json({ error: "Proposal not found" }, { status: 404 });
 
-    const updated = await decideAction(ctx.org, action, parsed.data.approve, ctx.user.id);
+    // Recommendations are Board proposals too, but approving one creates a
+    // project/task rather than running a governance executor. Rejection is
+    // generic, so decideAction handles it for every proposal type.
+    const updated =
+      parsed.data.approve && isRecommendation(action.type)
+        ? await acceptRecommendation(ctx.org, action, ctx.user.id)
+        : await decideAction(ctx.org, action, parsed.data.approve, ctx.user.id);
     return Response.json({ action: updated });
   } catch (err) {
     return errorResponse(err);

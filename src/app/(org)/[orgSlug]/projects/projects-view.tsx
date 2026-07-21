@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { Markdown } from "@/components/chat/markdown";
+import { OutputActions } from "@/components/output/output-actions";
 import { TaskCard, type TaskAgent, type TaskItem } from "@/components/tasks/task-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -271,6 +272,11 @@ function ProjectCard({
                 <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm">
                   <div className="pb-1 text-xs font-medium text-muted-foreground">Project summary</div>
                   <Markdown>{project.summary ?? detail.summary ?? ""}</Markdown>
+                  <OutputActions
+                    className="mt-2"
+                    text={project.summary ?? detail.summary ?? ""}
+                    defaultTitle={project.title}
+                  />
                 </div>
               )}
 
@@ -416,6 +422,7 @@ function MilestoneCard({
           <div className="rounded-md border bg-background/60 p-2.5 text-sm">
             <div className="pb-1 text-xs font-medium text-muted-foreground">Milestone deliverable</div>
             <Markdown>{stage.summary}</Markdown>
+            <OutputActions className="mt-2" text={stage.summary} defaultTitle={stage.title} />
           </div>
         )}
 

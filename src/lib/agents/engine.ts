@@ -128,7 +128,7 @@ interface AgentReplyOptions {
   gen?: GenSettings;
 }
 
-async function agentReply(
+export async function agentReply(
   agent: Agent,
   org: Organization,
   prompt: string,
@@ -983,6 +983,16 @@ async function completeProject(projectId: string): Promise<void> {
   });
   if (manager) {
     await curateKnowledge(manager, org, { title: project.title, description: project.description }, summary).catch(() => {});
+  }
+
+  // Fresh knowledge just landed — let the company proactively suggest what to
+  // do next (throttled + gated inside). Dynamic import breaks the static cycle
+  // (recommend.ts imports this engine).
+  try {
+    const { generateRecommendations } = await import("./recommend");
+    await generateRecommendations(org.id);
+  } catch (err) {
+    console.error("recommendation generation failed", err);
   }
 }
 
