@@ -1,8 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
-  serverExternalPackages: ["pdf-parse", "playwright-core"],
+  // Served with `next start` (see Dockerfile) so the container can rebuild
+  // itself on self-update; no standalone bundle needed.
+  serverExternalPackages: ["pdf-parse", "playwright-core", "@turbodocx/html-to-docx"],
 };
 
 export default nextConfig;

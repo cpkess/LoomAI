@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowLeft, Building2, Cpu, LayoutDashboard, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Building2, Cpu, LayoutDashboard, RefreshCw, ShieldCheck } from "lucide-react";
 
 import { currentUser } from "@/lib/auth/authorize";
 import { NavLink } from "@/components/shell/nav-link";
@@ -34,6 +34,10 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <NavLink href="/admin/organizations">
             <Building2 />
             Organizations
+          </NavLink>
+          <NavLink href="/admin/software">
+            <RefreshCw />
+            Software update
           </NavLink>
           <Link
             href="/"

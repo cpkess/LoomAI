@@ -24,7 +24,8 @@ LoomAI turns an organization into a hybrid human + AI company. Alongside your hu
 - **Streaming chat** — department conversations with any enabled model or AI employee, markdown rendering, history, auto-titles, token accounting.
 - **Knowledge / RAG** — collections of PDFs, DOCX, Markdown, text, HTML; chunked, embedded through your providers, stored in pgvector, retrieved into every chat and agent org-wide with source citations. No assignment needed — all employees see all knowledge.
 - **Prompt library** — reusable prompts with `{{variables}}`, categories, and version history; agent personas draw from it.
-- **Admin surfaces** — platform: providers, models, organizations, live health + ingestion queue. Org: members & roles, departments, people & org chart (with AI-employee management), knowledge, prompts.
+- **One-click updates** — a **Software update** panel in platform admin compares the running commit to the latest on GitHub and, when enabled, pulls + rebuilds + restarts the app in place — no manual `docker build` (see Production notes).
+- **Admin surfaces** — platform: providers, models, organizations, software update, live health + ingestion queue. Org: members & roles, departments, people & org chart (with AI-employee management), knowledge, prompts.
 
 ## Quickstart
 
@@ -58,6 +59,10 @@ Any OpenAI-compatible server works the same way: add a provider with its base UR
 ## Production notes
 
 The same `docker compose up -d --build` is the production deployment: the app container runs migrations and (first boot only) seeding before serving on port 3000. For real deployments pin `LOOMAI_SECRET` and `LOOMAI_ADMIN_PASSWORD` in the environment. `host.docker.internal` is mapped so an LM Studio/Ollama instance on the host machine is reachable from inside the container — when registering the provider from a containerized app, use `http://host.docker.internal:1234` (Auto-discover probes it automatically).
+
+### Updating from GitHub (one click)
+
+The Docker image ships as a self-updating checkout, so you don't have to manually rebuild. Set `LOOMAI_SELF_UPDATE=1` on the app, then go to **Platform admin → Software update**: it shows the running commit vs. the latest on GitHub, and **Update & restart** pulls the newest source, rebuilds, runs migrations, and comes back on the new version (briefly unavailable while it rebuilds). Optional overrides: `LOOMAI_REPO_URL` (default `https://github.com/cpkess/loomai.git`) and `LOOMAI_UPDATE_REF` (default `main`). With self-update left off (the default), the page still tells you when an update is available; apply it the classic way with `git pull && docker compose up -d --build`.
 
 ## Architecture
 
