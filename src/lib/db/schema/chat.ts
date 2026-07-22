@@ -2,7 +2,6 @@ import { index, integer, jsonb, pgEnum, pgTable, text, timestamp, uuid } from "d
 
 import { users } from "./auth";
 import { workspaces } from "./orgs";
-import { agents } from "./agents";
 
 export const messageRole = pgEnum("message_role", ["system", "user", "assistant"]);
 
@@ -10,21 +9,21 @@ export const conversations = pgTable(
   "conversations",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id")
-      .notNull()
-      .references(() => workspaces.id, { onDelete: "cascade" }),
+    // A conversation is scoped to a project (the project assistant). The legacy
+    // department workspace link is kept nullable for back-compat.
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "cascade" }),
+    // Project this conversation belongs to (app-layer FK to avoid a cycle).
+    projectId: uuid("project_id"),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    // Set when this conversation is with an AI employee
-    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     title: text("title").notNull().default("New conversation"),
     modelId: uuid("model_id"),
     systemPromptId: uuid("system_prompt_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("conversations_workspace_user_idx").on(t.workspaceId, t.userId)]
+  (t) => [index("conversations_project_user_idx").on(t.projectId, t.userId)]
 );
 
 export interface MessageSource {

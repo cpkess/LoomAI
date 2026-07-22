@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
-import { agents, projects } from "@/lib/db/schema";
+import { projects } from "@/lib/db/schema";
 
 export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug: string; projectId: string }> }) {
   try {
@@ -14,10 +14,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
     });
     if (!project) return Response.json({ error: "Project not found" }, { status: 404 });
 
-    const manager = project.managerAgentId
-      ? await db.query.agents.findFirst({ where: eq(agents.id, project.managerAgentId) })
-      : null;
-
     return Response.json({
       project: {
         id: project.id,
@@ -27,7 +23,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
         nextSteps: project.nextSteps,
         lastAnalyzedAt: project.lastAnalyzedAt,
         createdAt: project.createdAt,
-        manager: manager ? { id: manager.id, name: manager.name, title: manager.title, avatarColor: manager.avatarColor } : null,
       },
     });
   } catch (err) {

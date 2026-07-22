@@ -1,15 +1,15 @@
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { getChiefAgent } from "@/lib/agents/chief";
 import { enqueueDeliverable } from "@/lib/agents/engine";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
 import { deliverables, projects } from "@/lib/db/schema";
+import { DELIVERABLE_KINDS } from "@/lib/projects/deliverableKinds";
 
 const schema = z.object({
   title: z.string().min(1).max(200),
-  kind: z.enum(["report", "strategy", "prd", "research_summary", "proposal", "memo"]).default("report"),
+  kind: z.enum(DELIVERABLE_KINDS).default("report"),
   brief: z.string().max(8000).optional(),
   qualityConfig: z
     .object({
@@ -50,7 +50,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
     const parsed = schema.safeParse(await req.json());
     if (!parsed.success) return Response.json({ error: "Invalid input" }, { status: 400 });
 
-    const chief = await getChiefAgent(ctx.org.id);
     const [d] = await db
       .insert(deliverables)
       .values({
@@ -59,7 +58,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
         title: parsed.data.title,
         kind: parsed.data.kind,
         brief: parsed.data.brief ?? null,
-        managerAgentId: chief?.id ?? null,
         qualityConfig: parsed.data.qualityConfig ?? {},
         createdByUserId: ctx.user.id,
       })

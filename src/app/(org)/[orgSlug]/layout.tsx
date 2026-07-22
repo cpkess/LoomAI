@@ -1,9 +1,9 @@
-import { and, count, eq, inArray, isNull } from "drizzle-orm";
-import { BookOpen, ClipboardList, FolderKanban, Gavel, LayoutDashboard, MessagesSquare, Network, ScrollText, Settings, Users } from "lucide-react";
+import { eq, inArray } from "drizzle-orm";
+import { BookOpen, FolderKanban, LayoutDashboard, ScrollText, Settings, Users } from "lucide-react";
 
 import { requireOrgPage, roleAtLeast } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
-import { boardEmails, orgActions, organizationMembers, organizations, workspaces } from "@/lib/db/schema";
+import { organizationMembers, organizations } from "@/lib/db/schema";
 import { NavLink } from "@/components/shell/nav-link";
 import { OrgSwitcher } from "@/components/shell/org-switcher";
 import { UserMenu } from "@/components/shell/user-menu";
@@ -32,23 +32,6 @@ export default async function OrgLayout({
       })
     : [ctx.org];
 
-  const departments = await db.query.workspaces.findMany({
-    where: eq(workspaces.organizationId, ctx.org.id),
-    orderBy: (t, { asc }) => asc(t.name),
-  });
-
-  const [[pendingApprovals], [unreadEmails]] = await Promise.all([
-    db
-      .select({ value: count() })
-      .from(orgActions)
-      .where(and(eq(orgActions.organizationId, ctx.org.id), eq(orgActions.status, "pending_approval"))),
-    db
-      .select({ value: count() })
-      .from(boardEmails)
-      .where(and(eq(boardEmails.organizationId, ctx.org.id), isNull(boardEmails.readAt))),
-  ]);
-  const boardBadge = pendingApprovals.value + unreadEmails.value;
-
   const base = `/${ctx.org.slug}`;
 
   return (
@@ -67,26 +50,9 @@ export default async function OrgLayout({
               <LayoutDashboard />
               Dashboard
             </NavLink>
-            <NavLink href={`${base}/people`}>
-              <Network />
-              People &amp; org chart
-            </NavLink>
             <NavLink href={`${base}/projects`}>
               <FolderKanban />
               Projects
-            </NavLink>
-            <NavLink href={`${base}/tasks`}>
-              <ClipboardList />
-              Tasks
-            </NavLink>
-            <NavLink href={`${base}/board`}>
-              <Gavel />
-              Board room
-              {boardBadge > 0 && (
-                <span className="ml-auto rounded-full bg-warning/20 px-1.5 text-xs font-semibold text-warning">
-                  {boardBadge}
-                </span>
-              )}
             </NavLink>
             <NavLink href={`${base}/knowledge`}>
               <BookOpen />
@@ -96,19 +62,6 @@ export default async function OrgLayout({
               <ScrollText />
               Prompts
             </NavLink>
-          </div>
-
-          <div className="flex flex-col gap-0.5">
-            <div className="px-2 pb-1 text-xs font-medium text-muted-foreground">Departments</div>
-            {departments.map((d) => (
-              <NavLink key={d.id} href={`${base}/w/${d.slug}`}>
-                <MessagesSquare />
-                {d.name}
-              </NavLink>
-            ))}
-            {departments.length === 0 && (
-              <p className="px-2 py-1 text-xs text-muted-foreground">No departments yet</p>
-            )}
           </div>
 
           {isAdmin && (

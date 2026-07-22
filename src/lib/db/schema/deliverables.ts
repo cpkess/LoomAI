@@ -1,6 +1,5 @@
 import { integer, jsonb, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
-import { agents } from "./agents";
 import { organizations } from "./orgs";
 
 // Multi-stage deliverables: a large output is produced by an orchestrated
@@ -31,11 +30,13 @@ export const deliverables = pgTable(
     kind: text("kind").notNull().default("report"),
     brief: text("brief"),
     status: deliverableStatus("status").notNull().default("planning"),
-    managerAgentId: uuid("manager_agent_id").references(() => agents.id, { onDelete: "set null" }),
     // Quality gate thresholds (see lib/projects/quality.ts).
     qualityConfig: jsonb("quality_config").notNull().default({}),
-    // The final assembled document once completed.
+    // The final assembled document (Markdown) once completed.
     content: text("content"),
+    // Structured spec for native formats (presentation/workbook) — the typed
+    // slides/sheets the renderer turns into a .pptx/.xlsx.
+    spec: jsonb("spec"),
     iteration: integer("iteration").notNull().default(0),
     error: text("error"),
     createdByUserId: uuid("created_by_user_id"),

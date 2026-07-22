@@ -4,18 +4,15 @@ import { z } from "zod";
 import { generation } from "@/lib/ai/generation";
 import { db } from "@/lib/db";
 import {
-  agents,
   organizations,
   projectKnowledgeItems,
   projectSources,
   projects,
-  type Agent,
   type Organization,
 } from "@/lib/db/schema";
 
-import { getChiefAgent } from "@/lib/agents/chief";
-import { agentReply } from "@/lib/agents/engine";
 import { extractJson } from "@/lib/agents/json";
+import { systemReply } from "@/lib/agents/subagent";
 import {
   addEdge,
   addItem,
@@ -38,6 +35,10 @@ const ITEM_TYPES = ["fact", "claim", "insight", "assumption", "decision", "quest
 const REINFORCE_SIMILARITY = 0.9; // near-duplicate → reinforce instead of adding
 const RELATE_SIMILARITY = 0.55; // related enough to consider a relationship
 const MAX_RELATION_PAIRS = 8;
+
+// The persona every analysis subagent wears — a rigorous knowledge analyst.
+const ANALYST_PERSONA =
+  "You are the project's knowledge analyst. You extract atomic, well-classified knowledge, reconcile it against what is already known, and recommend the most valuable next steps. You are precise, evidence-driven, and never invent facts.";
 
 const extractSchema = z.object({
   items: z
@@ -68,14 +69,6 @@ export async function markSourceError(sourceId: string, message: string): Promis
   await db.update(projectSources).set({ status: "error", error: message }).where(eq(projectSources.id, sourceId));
 }
 
-async function resolveManager(project: { managerAgentId: string | null; organizationId: string }): Promise<Agent | null> {
-  if (project.managerAgentId) {
-    const a = await db.query.agents.findFirst({ where: eq(agents.id, project.managerAgentId) });
-    if (a) return a;
-  }
-  return getChiefAgent(project.organizationId);
-}
-
 /**
  * Analyze one project source into the knowledge graph. Idempotent per source
  * (only runs while `pending`), so it's safe to re-enqueue after a restart.
@@ -88,15 +81,9 @@ export async function analyzeSource(sourceId: string): Promise<void> {
   if (!project) return;
   const org = await db.query.organizations.findFirst({ where: eq(organizations.id, project.organizationId) });
   if (!org) return;
-  const manager = await resolveManager(project);
-  if (!manager) {
-    await db.update(projectSources).set({ status: "error", error: "No AI employee available to analyze" }).where(eq(projectSources.id, sourceId));
-    return;
-  }
 
   // 1. Extract typed knowledge items from the source.
-  const extractText = await agentReply(
-    manager,
+  const extractText = await systemReply(
     org,
     [
       `You are building the structured knowledge for the project "${project.title}".`,
@@ -110,7 +97,7 @@ export async function analyzeSource(sourceId: string): Promise<void> {
     ]
       .filter(Boolean)
       .join("\n"),
-    { gen: generation.extract }
+    { persona: ANALYST_PERSONA, gen: generation.extract }
   );
   const parsed = extractSchema.safeParse(extractJson(extractText));
   const extracted = parsed.success ? parsed.data.items : [];
@@ -162,8 +149,7 @@ export async function analyzeSource(sourceId: string): Promise<void> {
   }
 
   if (pairs.length > 0) {
-    const relText = await agentReply(
-      manager,
+    const relText = await systemReply(
       org,
       [
         "For each numbered pair of statements (A = new, B = existing), classify how A relates to B: supports, contradicts, answers (A answers a question B), refines (A is a more precise version of B), or none.",
@@ -172,7 +158,7 @@ export async function analyzeSource(sourceId: string): Promise<void> {
         "",
         'Respond with JSON only: {"relations":[{"index":0,"relation":"supports|contradicts|answers|refines|none","rationale":"..."}]}',
       ].join("\n"),
-      { gen: generation.extract }
+      { persona: ANALYST_PERSONA, gen: generation.extract }
     );
     const relParsed = relationSchema.safeParse(extractJson(relText));
     for (const rel of relParsed.success ? relParsed.data.relations : []) {
@@ -197,7 +183,7 @@ export async function analyzeSource(sourceId: string): Promise<void> {
   }
 
   // 3. Refresh the project's recommended next steps from current knowledge.
-  await refreshNextSteps(project, org, manager);
+  await refreshNextSteps(project, org);
 
   await db.update(projectSources).set({ status: "analyzed", analyzedAt: new Date() }).where(eq(projectSources.id, sourceId));
   await db.update(projects).set({ lastAnalyzedAt: new Date(), updatedAt: new Date() }).where(eq(projects.id, project.id));
@@ -210,16 +196,13 @@ export async function reevaluateProject(projectId: string): Promise<void> {
   if (!project) return;
   const org = await db.query.organizations.findFirst({ where: eq(organizations.id, project.organizationId) });
   if (!org) return;
-  const manager = await resolveManager(project);
-  if (!manager) return;
-  await refreshNextSteps(project, org, manager);
+  await refreshNextSteps(project, org);
 }
 
 /** Re-derive the recommended next steps from the project's active knowledge. */
 export async function refreshNextSteps(
   project: { id: string; title: string; description: string | null },
-  org: Organization,
-  manager: Agent
+  org: Organization
 ): Promise<void> {
   const items = await db.query.projectKnowledgeItems.findMany({
     where: and(eq(projectKnowledgeItems.projectId, project.id)),
@@ -233,8 +216,7 @@ export async function refreshNextSteps(
   const risks = active.filter((i) => i.type === "risk");
   const challenged = active.filter((i) => i.status === "challenged");
 
-  const nextSteps = await agentReply(
-    manager,
+  const nextSteps = await systemReply(
     org,
     [
       `You are the lead on the project "${project.title}". Based on the project's current knowledge, recommend the most valuable next steps.`,
@@ -248,7 +230,7 @@ export async function refreshNextSteps(
     ]
       .filter(Boolean)
       .join("\n"),
-    { gen: generation.summary }
+    { persona: ANALYST_PERSONA, gen: generation.summary }
   );
 
   await db.update(projects).set({ nextSteps: nextSteps.trim(), updatedAt: new Date() }).where(eq(projects.id, project.id));

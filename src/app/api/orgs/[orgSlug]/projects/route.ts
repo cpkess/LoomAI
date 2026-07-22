@@ -1,7 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { getChiefAgent } from "@/lib/agents/chief";
 import { createLivingProject } from "@/lib/projects/create";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
@@ -20,12 +19,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
     const parsed = createSchema.safeParse(await req.json());
     if (!parsed.success) return Response.json({ error: "Invalid input" }, { status: 400 });
 
-    const chief = await getChiefAgent(ctx.org.id);
     const project = await createLivingProject({
       orgId: ctx.org.id,
       title: parsed.data.title,
       description: parsed.data.description ?? null,
-      managerAgentId: chief?.id ?? null,
       createdByUserId: ctx.user.id,
     });
     return Response.json({ project: { id: project.id } }, { status: 201 });

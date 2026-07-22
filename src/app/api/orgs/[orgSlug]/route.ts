@@ -1,15 +1,15 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { ACTION_TYPES } from "@/lib/company/actions";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
 import { organizations } from "@/lib/db/schema";
 
 const updateSchema = z.object({
   name: z.string().min(1).max(120).optional(),
-  governance: z.partialRecord(z.enum(ACTION_TYPES), z.enum(["auto", "board"])).optional(),
   autoKnowledge: z.boolean().optional(),
+  webResearch: z.boolean().optional(),
+  defaultModelId: z.string().uuid().nullable().optional(),
 });
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ orgSlug: string }> }) {
@@ -20,15 +20,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ orgSlu
     if (!parsed.success) return Response.json({ error: "Invalid input" }, { status: 400 });
 
     const settings = { ...(ctx.org.settings as Record<string, unknown>) };
-    if (parsed.data.governance) {
-      settings.governance = {
-        ...((settings.governance as Record<string, string>) ?? {}),
-        ...parsed.data.governance,
-      };
-    }
-    if (parsed.data.autoKnowledge !== undefined) {
-      settings.autoKnowledge = parsed.data.autoKnowledge;
-    }
+    if (parsed.data.autoKnowledge !== undefined) settings.autoKnowledge = parsed.data.autoKnowledge;
+    if (parsed.data.webResearch !== undefined) settings.webResearch = parsed.data.webResearch;
+    if (parsed.data.defaultModelId !== undefined) settings.defaultModelId = parsed.data.defaultModelId ?? undefined;
 
     const [org] = await db
       .update(organizations)

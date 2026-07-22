@@ -2,7 +2,7 @@ import { count, eq } from "drizzle-orm";
 
 import { requirePlatformAdmin } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
-import { agents, organizationMembers, organizations, workspaces } from "@/lib/db/schema";
+import { organizationMembers, projects } from "@/lib/db/schema";
 
 import { OrganizationsView } from "./organizations-view";
 
@@ -16,18 +16,16 @@ export default async function OrganizationsPage() {
 
   const rows = await Promise.all(
     orgs.map(async (org) => {
-      const [[members], [depts], [orgAgents]] = await Promise.all([
+      const [[members], [orgProjects]] = await Promise.all([
         db.select({ value: count() }).from(organizationMembers).where(eq(organizationMembers.organizationId, org.id)),
-        db.select({ value: count() }).from(workspaces).where(eq(workspaces.organizationId, org.id)),
-        db.select({ value: count() }).from(agents).where(eq(agents.organizationId, org.id)),
+        db.select({ value: count() }).from(projects).where(eq(projects.organizationId, org.id)),
       ]);
       return {
         id: org.id,
         slug: org.slug,
         name: org.name,
         members: members.value,
-        departments: depts.value,
-        agents: orgAgents.value,
+        projects: orgProjects.value,
       };
     })
   );

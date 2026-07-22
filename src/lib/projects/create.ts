@@ -11,7 +11,6 @@ export async function createLivingProject(input: {
   orgId: string;
   title: string;
   description?: string | null;
-  managerAgentId?: string | null;
   createdByUserId?: string | null;
 }): Promise<Project> {
   const [project] = await db
@@ -21,7 +20,6 @@ export async function createLivingProject(input: {
       title: input.title,
       description: input.description ?? null,
       status: "in_progress",
-      managerAgentId: input.managerAgentId ?? null,
       createdByUserId: input.createdByUserId ?? null,
     })
     .returning();

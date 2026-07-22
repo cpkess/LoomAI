@@ -17,6 +17,8 @@ export async function addSource(input: {
   content: string;
   ref?: string | null;
   addedByUserId?: string | null;
+  /** Skip the built-in text ingest (when the raw file is ingested separately). */
+  skipIngest?: boolean;
 }): Promise<ProjectSource> {
   const [source] = await db
     .insert(projectSources)
@@ -33,7 +35,7 @@ export async function addSource(input: {
     .returning();
 
   // Make the raw text retrievable for deliverable production.
-  if (input.content.trim()) {
+  if (input.content.trim() && !input.skipIngest) {
     const collectionId = await projectCollectionId(input.projectId, input.orgId);
     await addTextToKnowledge({
       orgId: input.orgId,

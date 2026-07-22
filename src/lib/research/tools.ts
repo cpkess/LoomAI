@@ -1,23 +1,16 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 
-import type { Agent } from "@/lib/db/schema";
-
 import { browsePage, browserAvailable, fetchReadable, webSearch } from "./web";
 
-export const WEB_RESEARCH_PERMISSION = "web_research";
-
-export function hasWebResearch(agent: Agent): boolean {
-  return (agent.permissions ?? []).includes(WEB_RESEARCH_PERMISSION);
-}
-
 /**
- * Web-research tools for agents granted the web_research capability. All are
- * free and key-less. They let an agent search, open pages, follow links, and
- * fully render JS-heavy sites — i.e. manually navigate the web.
+ * Web-research tools, free and key-less. They let a subagent search, open
+ * pages, follow links, and fully render JS-heavy sites — i.e. manually navigate
+ * the web. Enabled per call (e.g. for the researcher role); returns an empty
+ * tool set when disabled.
  */
-export function buildResearchTools(agent: Agent): ToolSet {
-  if (!hasWebResearch(agent)) return {};
+export function buildResearchTools(enabled: boolean): ToolSet {
+  if (!enabled) return {};
 
   const tools: ToolSet = {};
 
@@ -83,9 +76,9 @@ export function buildResearchTools(agent: Agent): ToolSet {
   return tools;
 }
 
-/** System-prompt guidance for an agent's web-research capability. */
-export function describeResearch(agent: Agent): string | null {
-  if (!hasWebResearch(agent)) return null;
+/** System-prompt guidance for the web-research capability, when enabled. */
+export function describeResearch(enabled: boolean): string | null {
+  if (!enabled) return null;
   const browser = browserAvailable();
   return [
     "You can research the web using your tools — do real research, do not guess:",

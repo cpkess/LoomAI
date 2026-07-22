@@ -1,10 +1,10 @@
 import { count, eq, inArray } from "drizzle-orm";
-import { Activity, Bot, Building2, Cpu, FileText, MessagesSquare, Users } from "lucide-react";
+import { Activity, Building2, Cpu, FileText, FolderKanban, MessagesSquare, Users } from "lucide-react";
 
 import { getPlugin, toInstance } from "@/lib/ai/registry";
 import { requirePlatformAdmin } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
-import { agents, aiModels, aiProviders, conversations, documents, organizations, users } from "@/lib/db/schema";
+import { aiModels, conversations, documents, organizations, projects, users } from "@/lib/db/schema";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -14,11 +14,11 @@ export const dynamic = "force-dynamic";
 export default async function AdminOverviewPage() {
   await requirePlatformAdmin();
 
-  const [[orgCount], [userCount], [agentCount], [documentCount], [conversationCount], [modelCount], providers] =
+  const [[orgCount], [userCount], [projectCount], [documentCount], [conversationCount], [modelCount], providers] =
     await Promise.all([
       db.select({ value: count() }).from(organizations),
       db.select({ value: count() }).from(users),
-      db.select({ value: count() }).from(agents),
+      db.select({ value: count() }).from(projects),
       db.select({ value: count() }).from(documents),
       db.select({ value: count() }).from(conversations),
       db.select({ value: count() }).from(aiModels).where(eq(aiModels.enabled, true)),
@@ -49,7 +49,7 @@ export default async function AdminOverviewPage() {
   const stats = [
     { label: "Organizations", value: orgCount.value, icon: Building2 },
     { label: "Users", value: userCount.value, icon: Users },
-    { label: "AI employees", value: agentCount.value, icon: Bot },
+    { label: "Projects", value: projectCount.value, icon: FolderKanban },
     { label: "Enabled models", value: modelCount.value, icon: Cpu },
     { label: "Documents", value: documentCount.value, icon: FileText },
     { label: "Conversations", value: conversationCount.value, icon: MessagesSquare },

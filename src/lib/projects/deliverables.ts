@@ -4,26 +4,44 @@ import { z } from "zod";
 import { generation } from "@/lib/ai/generation";
 import { db } from "@/lib/db";
 import {
-  agents,
   deliverableEvents,
   deliverableSections,
   deliverables,
   organizations,
   projects,
-  type Agent,
   type Deliverable,
   type DeliverableSection,
   type Organization,
 } from "@/lib/db/schema";
 
-import { getChiefAgent } from "@/lib/agents/chief";
-import { agentReply, enqueueDeliverable } from "@/lib/agents/engine";
+import { enqueueDeliverable } from "@/lib/agents/engine";
 import { extractJson } from "@/lib/agents/json";
-import { resolveRoleAgent, type Role } from "@/lib/agents/roles";
+import { subagentForRole, type Role } from "@/lib/agents/roles";
+import { systemReply } from "@/lib/agents/subagent";
 import { limits } from "@/lib/ai/generation";
+import { slideFromMarkdown, type DeckSpec } from "@/lib/export/pptx";
+import { sheetFromMarkdown, type WorkbookSpec } from "@/lib/export/xlsx";
+import { structuredKind } from "./deliverableKinds";
 import { recordProjectEvent, retrieveProjectContext } from "./knowledge";
 import { addSource } from "./sources";
 import { evaluateQualityGates, resolveQualityConfig, type SectionIssue } from "./quality";
+
+// Per-format guidance so a presentation plans slides and a workbook plans
+// sheets, while prose kinds stay prose. Extending a format = add a case here
+// plus a renderer.
+function outlineGuidance(kind: string): string {
+  const s = structuredKind(kind);
+  if (s === "presentation") return "Each section is a SLIDE: the heading is the slide title, and the brief says what 3–6 bullet points it should make.";
+  if (s === "workbook") return "Each section is a WORKSHEET: the heading is the sheet name, and the brief describes the columns and the rows it should contain.";
+  return "";
+}
+
+function sectionGuidance(kind: string): string {
+  const s = structuredKind(kind);
+  if (s === "presentation") return "Write this slide as 3–6 concise bullet points, one per line starting with '- '. No paragraphs, no heading.";
+  if (s === "workbook") return "Write this worksheet as a single Markdown table: a header row of column names, then the data rows. Output only the table.";
+  return "Write only this section's content in Markdown (no top-level heading — it will be added on assembly).";
+}
 
 // The multi-stage deliverable engine: a DB-state-driven, re-entrant state
 // machine. Each tick performs one bounded unit of work (plan the outline, draft
@@ -60,19 +78,10 @@ export async function markDeliverableFailed(id: string, message: string): Promis
   await db.update(deliverables).set({ status: "failed", error: message, updatedAt: new Date() }).where(eq(deliverables.id, id));
 }
 
-async function managerOf(d: Deliverable): Promise<Agent | null> {
-  if (d.managerAgentId) {
-    const a = await db.query.agents.findFirst({ where: eq(agents.id, d.managerAgentId) });
-    if (a) return a;
-  }
-  return getChiefAgent(d.organizationId);
-}
-
-/** Run one role with its built-in persona layered on. */
-async function runRole(orgId: string, role: Role, manager: Agent | null, org: Organization, prompt: string, gen = generation.work): Promise<string> {
-  const resolved = await resolveRoleAgent(orgId, role, manager);
-  if (!resolved) throw new Error("No AI employee available to produce this deliverable");
-  return agentReply(resolved.agent, org, prompt, { extraSystem: resolved.persona, gen, withTools: role === "researcher" });
+/** Run one specialist subagent (its built-in persona) to produce a step. */
+async function runRole(org: Organization, role: Role, prompt: string, gen = generation.work): Promise<string> {
+  const sub = subagentForRole(role);
+  return systemReply(org, prompt, { persona: sub.persona, gen, withTools: role === "researcher" });
 }
 
 /**
@@ -86,31 +95,29 @@ export async function advanceDeliverable(deliverableId: string): Promise<void> {
   if (!project) return;
   const org = await db.query.organizations.findFirst({ where: eq(organizations.id, d.organizationId) });
   if (!org) return;
-  const manager = await managerOf(d);
 
   let terminal = false;
 
   if (d.status === "planning") {
-    await planOutline(d, project, org, manager);
+    await planOutline(d, project, org);
   } else if (d.status === "producing" || d.status === "revising") {
-    terminal = await produceStep(d, project, org, manager);
+    terminal = await produceStep(d, project, org);
   } else if (d.status === "reviewing") {
-    terminal = await reviewStep(d, project, org, manager);
+    terminal = await reviewStep(d, project, org);
   }
 
   if (!terminal) enqueueDeliverable(deliverableId);
 }
 
-async function planOutline(d: Deliverable, project: { id: string; title: string; description: string | null; organizationId: string }, org: Organization, manager: Agent | null): Promise<void> {
+async function planOutline(d: Deliverable, project: { id: string; title: string; description: string | null; organizationId: string }, org: Organization): Promise<void> {
   const context = await retrieveProjectContext(project, `${d.title}\n${d.brief ?? ""}`);
   const text = await runRole(
-    org.id,
-    "planner",
-    manager,
     org,
+    "planner",
     [
       `Plan the outline for a ${d.kind} titled "${d.title}".`,
       d.brief ? `Brief: ${d.brief}` : "",
+      outlineGuidance(d.kind),
       context ? `\nProject knowledge to build on:\n${context}\n` : "",
       `Produce up to ${Math.min(12, limits.maxStageTasks + 4)} sections, each with a one-line brief of what it must cover. No overlap; complete coverage of the goal.`,
       'Respond with JSON only: {"sections":[{"heading":"...","brief":"..."}]}',
@@ -131,7 +138,7 @@ async function planOutline(d: Deliverable, project: { id: string; title: string;
 }
 
 /** Draft/redraft the next unwritten section; when all are drafted, move to review. */
-async function produceStep(d: Deliverable, project: { id: string; organizationId: string; title: string; description: string | null }, org: Organization, manager: Agent | null): Promise<boolean> {
+async function produceStep(d: Deliverable, project: { id: string; organizationId: string; title: string; description: string | null }, org: Organization): Promise<boolean> {
   const sections = await db.query.deliverableSections.findMany({
     where: eq(deliverableSections.deliverableId, d.id),
     orderBy: asc(deliverableSections.orderIndex),
@@ -149,17 +156,15 @@ async function produceStep(d: Deliverable, project: { id: string; organizationId
 
   const role: Role = isRevision ? "editor" : "writer";
   const content = await runRole(
-    org.id,
-    role,
-    manager,
     org,
+    role,
     [
       `${isRevision ? "Revise" : "Write"} the section "${next.heading}" of the ${d.kind} "${d.title}".`,
       next.brief ? `This section must cover: ${next.brief}` : "",
       `Other sections (for coherence, don't duplicate them):\n${others || "(none)"}`,
       context ? `\nEvidence from the project's knowledge:\n${context}\n` : "",
       isRevision && issues.length ? `Address these issues from review:\n${issues.map((i) => `- (${i.severity}) ${i.kind}: ${i.detail}`).join("\n")}` : "",
-      "Write only this section's content in Markdown (no top-level heading — it will be added on assembly).",
+      sectionGuidance(d.kind),
     ]
       .filter(Boolean)
       .join("\n"),
@@ -175,7 +180,7 @@ async function produceStep(d: Deliverable, project: { id: string; organizationId
 }
 
 /** Critique the next un-reviewed section; when all reviewed, run the quality gate. */
-async function reviewStep(d: Deliverable, project: { id: string; title: string }, org: Organization, manager: Agent | null): Promise<boolean> {
+async function reviewStep(d: Deliverable, project: { id: string; title: string }, org: Organization): Promise<boolean> {
   const sections = await db.query.deliverableSections.findMany({
     where: eq(deliverableSections.deliverableId, d.id),
     orderBy: asc(deliverableSections.orderIndex),
@@ -184,10 +189,8 @@ async function reviewStep(d: Deliverable, project: { id: string; title: string }
   if (next) {
     const others = sections.filter((s) => s.id !== next.id).map((s) => `- ${s.heading}`).join("\n");
     const text = await runRole(
-      org.id,
-      "critic",
-      manager,
       org,
+      "critic",
       [
         `Critically review this section of the ${d.kind} "${d.title}" for logical consistency, unsupported claims, weak arguments, inconsistent terminology, weak transitions, and deviation from the goal.`,
         `Section "${next.heading}" — should cover: ${next.brief ?? ""}`,
@@ -207,7 +210,7 @@ async function reviewStep(d: Deliverable, project: { id: string; title: string }
   }
 
   // All sections critiqued this round → cross-section gap analysis, then gate.
-  await gapAnalysis(d, org, manager, sections);
+  await gapAnalysis(d, org, sections);
   const reviewed = await db.query.deliverableSections.findMany({ where: eq(deliverableSections.deliverableId, d.id) });
   const config = resolveQualityConfig(d.qualityConfig);
   const gate = evaluateQualityGates(
@@ -235,13 +238,11 @@ async function reviewStep(d: Deliverable, project: { id: string; title: string }
 }
 
 /** One cross-section pass (continuity + gaps) that may attach issues or add sections. */
-async function gapAnalysis(d: Deliverable, org: Organization, manager: Agent | null, sections: DeliverableSection[]): Promise<void> {
+async function gapAnalysis(d: Deliverable, org: Organization, sections: DeliverableSection[]): Promise<void> {
   const outline = sections.map((s) => `- ${s.heading}: ${s.brief ?? ""}`).join("\n");
   const text = await runRole(
-    org.id,
-    "gap_analysis",
-    manager,
     org,
+    "gap_analysis",
     [
       `Review the whole outline of the ${d.kind} "${d.title}" against its goal${d.brief ? ` (${d.brief})` : ""}. Find missing topics, redundant/overlapping sections, and structural gaps.`,
       `Outline:\n${outline}`,
@@ -280,7 +281,17 @@ async function assemble(d: Deliverable, project: { id: string; title: string }, 
   const body = sections.map((s) => `## ${s.heading}\n\n${(s.content ?? "").trim()}`).join("\n\n");
   const content = `# ${d.title}\n\n${body}`;
 
-  await db.update(deliverables).set({ status: "completed", content, updatedAt: new Date() }).where(eq(deliverables.id, d.id));
+  // Structured kinds (presentation/workbook) also assemble a typed spec that the
+  // native renderer turns into a real .pptx/.xlsx.
+  const kind = structuredKind(d.kind);
+  let spec: DeckSpec | WorkbookSpec | null = null;
+  if (kind === "presentation") {
+    spec = { title: d.title, slides: sections.map((s) => slideFromMarkdown(s.heading, s.content ?? "")) };
+  } else if (kind === "workbook") {
+    spec = { title: d.title, sheets: sections.map((s) => sheetFromMarkdown(s.heading, s.content ?? "")) };
+  }
+
+  await db.update(deliverables).set({ status: "completed", content, spec, updatedAt: new Date() }).where(eq(deliverables.id, d.id));
   await dEvent(d.id, "assembled", `Assembled ${sections.length} sections into the final ${d.kind}`);
   await recordProjectEvent(project.id, "deliverable_completed", `Completed deliverable "${d.title}"`, { type: "deliverable", id: d.id });
 

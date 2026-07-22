@@ -24,8 +24,7 @@ interface OrgRow {
   slug: string;
   name: string;
   members: number;
-  departments: number;
-  agents: number;
+  projects: number;
 }
 
 export function OrganizationsView({ organizations }: { organizations: OrgRow[] }) {
@@ -38,7 +37,7 @@ export function OrganizationsView({ organizations }: { organizations: OrgRow[] }
         <div>
           <h1 className="text-xl font-semibold">Organizations</h1>
           <p className="text-sm text-muted-foreground">
-            Tenants on this deployment. Each is fully isolated: its own people, AI employees, knowledge, and prompts.
+            Tenants on this deployment. Each is fully isolated: its own members, projects, knowledge, and prompts.
           </p>
         </div>
         <Button onClick={() => setCreating(true)}>
@@ -52,8 +51,7 @@ export function OrganizationsView({ organizations }: { organizations: OrgRow[] }
           <TableRow>
             <TableHead>Organization</TableHead>
             <TableHead>Members</TableHead>
-            <TableHead>Departments</TableHead>
-            <TableHead>AI employees</TableHead>
+            <TableHead>Projects</TableHead>
             <TableHead />
           </TableRow>
         </TableHeader>
@@ -65,8 +63,7 @@ export function OrganizationsView({ organizations }: { organizations: OrgRow[] }
                 <div className="text-xs text-muted-foreground">/{org.slug}</div>
               </TableCell>
               <TableCell>{org.members}</TableCell>
-              <TableCell>{org.departments}</TableCell>
-              <TableCell>{org.agents}</TableCell>
+              <TableCell>{org.projects}</TableCell>
               <TableCell className="text-right">
                 <Button asChild variant="ghost" size="sm">
                   <Link href={`/${org.slug}/dashboard`}>

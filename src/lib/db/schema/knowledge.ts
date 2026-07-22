@@ -47,6 +47,9 @@ export const documents = pgTable("documents", {
   status: documentStatus("status").notNull().default("pending"),
   error: text("error"),
   chunkCount: integer("chunk_count").notNull().default(0),
+  // Preserved source structure/provenance (source kind, page/slide/sheet counts,
+  // original filename, import URL). Populated by the ingestion parsers.
+  metadata: jsonb("metadata").notNull().default({}),
   uploadedByUserId: uuid("uploaded_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

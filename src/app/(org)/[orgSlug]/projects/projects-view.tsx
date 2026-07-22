@@ -1,10 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+
+import { ProjectChat } from "./project-chat";
 import {
   AlertTriangle,
   ArrowLeft,
   Clock,
+  Download,
   FileStack,
   FolderKanban,
   HelpCircle,
@@ -15,6 +18,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
+
+import { DELIVERABLE_KINDS, KIND_LABELS, structuredKind } from "@/lib/projects/deliverableKinds";
 
 import { Markdown } from "@/components/chat/markdown";
 import { OutputActions } from "@/components/output/output-actions";
@@ -177,6 +182,7 @@ function ProjectDetail({ orgSlug, projectId, onBack }: { orgSlug: string; projec
           <TabsTrigger value="sources">Sources</TabsTrigger>
           <TabsTrigger value="knowledge">Knowledge</TabsTrigger>
           <TabsTrigger value="deliverables">Deliverables</TabsTrigger>
+          <TabsTrigger value="chat">Chat</TabsTrigger>
         </TabsList>
         <TabsContent value="overview" className="pt-3">
           <OverviewTab orgSlug={orgSlug} projectId={projectId} />
@@ -189,6 +195,9 @@ function ProjectDetail({ orgSlug, projectId, onBack }: { orgSlug: string; projec
         </TabsContent>
         <TabsContent value="deliverables" className="pt-3">
           <DeliverablesTab orgSlug={orgSlug} projectId={projectId} />
+        </TabsContent>
+        <TabsContent value="chat" className="pt-3">
+          <ProjectChat orgSlug={orgSlug} projectId={projectId} />
         </TabsContent>
       </Tabs>
     </>
@@ -206,6 +215,9 @@ interface Briefing {
   challenged: { id: string; content: string }[];
   risks: { id: string; content: string }[];
   stale: { id: string; type: string; content: string }[];
+  themes: { label: string; size: number }[];
+  gaps: { kind: string; content: string }[];
+  investigations: { reason: string; content: string }[];
   timeline: { id: string; kind: string; summary: string; createdAt: string }[];
 }
 
@@ -261,7 +273,29 @@ function OverviewTab({ orgSlug, projectId }: { orgSlug: string; projectId: strin
         </Card>
       )}
 
+      {briefing.investigations.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Lightbulb className="size-4 text-primary" />
+              Suggested next investigations
+            </CardTitle>
+            <CardDescription>What to dig into next, based on gaps and contradictions.</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-1.5">
+            {briefing.investigations.map((inv, i) => (
+              <p key={i} className="text-sm">
+                • {inv.content}
+                <span className="ml-2 text-xs text-muted-foreground">({inv.reason.replace(/_/g, " ")})</span>
+              </p>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-3 sm:grid-cols-2">
+        <ItemPanel title="Emerging themes" icon={Sparkles} tone="text-violet-500" items={briefing.themes.map((t) => `${t.label} (${t.size})`)} empty="No themes yet." />
+        <ItemPanel title="Missing information" icon={HelpCircle} tone="text-sky-500" items={briefing.gaps.map((g) => g.content)} empty="No obvious gaps." />
         <ItemPanel title="Needs attention: stale" icon={Clock} tone="text-amber-500" items={briefing.stale.map((i) => i.content)} empty="Nothing stale." />
         <ItemPanel title="Contradictions / challenged" icon={AlertTriangle} tone="text-amber-500" items={briefing.challenged.map((i) => i.content)} empty="No unresolved contradictions." />
         <ItemPanel title="Open questions" icon={HelpCircle} tone="text-sky-500" items={briefing.openQuestions.map((i) => i.content)} empty="No open questions." />
@@ -673,6 +707,20 @@ function DeliverableDetail({ orgSlug, projectId, deliverableId, onBack }: { orgS
             <CardTitle className="text-base">Final document</CardTitle>
           </CardHeader>
           <CardContent>
+            {structuredKind(d.kind) && (
+              <div className="mb-3">
+                <Button asChild size="sm">
+                  <a
+                    href={`/api/orgs/${orgSlug}/projects/${projectId}/deliverables/${deliverableId}/download?format=${
+                      structuredKind(d.kind) === "presentation" ? "pptx" : "xlsx"
+                    }`}
+                  >
+                    <Download />
+                    Download {structuredKind(d.kind) === "presentation" ? ".pptx" : ".xlsx"}
+                  </a>
+                </Button>
+              </div>
+            )}
             <Markdown>{d.content}</Markdown>
             <OutputActions className="mt-2" text={d.content} defaultTitle={d.title} />
           </CardContent>
@@ -823,63 +871,106 @@ function CreateProjectDialog({ orgSlug, onClose }: { orgSlug: string; onClose: (
 }
 
 function AddSourceDialog({ orgSlug, projectId, onClose }: { orgSlug: string; projectId: string; onClose: (saved: boolean) => void }) {
-  const [kind, setKind] = useState("note");
+  const [mode, setMode] = useState<"text" | "file" | "url">("text");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [url, setUrl] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const [pending, setPending] = useState(false);
+  const endpoint = `/api/orgs/${orgSlug}/projects/${projectId}/sources`;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setPending(true);
-    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/sources`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, title, content }),
-    });
+    let res: Response;
+    if (mode === "file") {
+      if (!file) return setPending(false);
+      const fd = new FormData();
+      fd.append("file", file);
+      res = await fetch(endpoint, { method: "POST", body: fd });
+    } else if (mode === "url") {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "research", title: title || url, url }),
+      });
+    } else {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "note", title, content }),
+      });
+    }
     setPending(false);
     if (!res.ok) {
-      toast.error("Could not add source");
+      const body = await res.json().catch(() => ({}));
+      toast.error(body.error ?? "Could not add source");
       return;
     }
     toast.success("Source added — analyzing into the project's knowledge");
     onClose(true);
   }
 
+  const disabled =
+    pending ||
+    (mode === "text" && (!title.trim() || !content.trim())) ||
+    (mode === "file" && !file) ||
+    (mode === "url" && !url.trim());
+
   return (
     <Dialog open onOpenChange={(o) => !o && onClose(false)}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Add a source</DialogTitle>
-          <DialogDescription>Paste a note, research, meeting summary, competitor info, or email.</DialogDescription>
+          <DialogDescription>
+            Paste text, upload a file (PDF, Word, PowerPoint, Excel, images, transcripts, ZIP…), or import a web page.
+          </DialogDescription>
         </DialogHeader>
+        <div className="flex gap-1 rounded-md bg-muted p-1 text-sm">
+          {(["text", "file", "url"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              className={`flex-1 rounded px-2 py-1 capitalize transition-colors ${mode === m ? "bg-background shadow-sm" : "text-muted-foreground"}`}
+            >
+              {m === "url" ? "Web page" : m}
+            </button>
+          ))}
+        </div>
         <form onSubmit={submit} className="flex flex-col gap-4">
-          <div className="grid gap-4 sm:grid-cols-2">
+          {mode === "text" && (
+            <>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="s-title">Title</Label>
+                <Input id="s-title" value={title} onChange={(e) => setTitle(e.target.value)} required />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="s-content">Content</Label>
+                <Textarea id="s-content" value={content} onChange={(e) => setContent(e.target.value)} rows={8} placeholder="Paste the text to analyze…" />
+              </div>
+            </>
+          )}
+          {mode === "file" && (
             <div className="flex flex-col gap-2">
-              <Label>Kind</Label>
-              <Select value={kind} onValueChange={setKind}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {["note", "research", "document", "email", "manual"].map((k) => (
-                    <SelectItem key={k} value={k}>
-                      {k}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label htmlFor="s-file">File</Label>
+              <Input
+                id="s-file"
+                type="file"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                accept=".pdf,.docx,.pptx,.xlsx,.md,.txt,.csv,.json,.html,.htm,.vtt,.srt,.zip,.png,.jpg,.jpeg,.gif,.webp"
+              />
+              <p className="text-xs text-muted-foreground">Structure and metadata (slides, sheets) are preserved.</p>
             </div>
+          )}
+          {mode === "url" && (
             <div className="flex flex-col gap-2">
-              <Label htmlFor="s-title">Title</Label>
-              <Input id="s-title" value={title} onChange={(e) => setTitle(e.target.value)} required />
+              <Label htmlFor="s-url">Page URL</Label>
+              <Input id="s-url" type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" />
             </div>
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="s-content">Content</Label>
-            <Textarea id="s-content" value={content} onChange={(e) => setContent(e.target.value)} rows={8} required placeholder="Paste the text to analyze…" />
-          </div>
+          )}
           <DialogFooter>
-            <Button type="submit" disabled={pending || !title.trim() || !content.trim()}>
+            <Button type="submit" disabled={disabled}>
               {pending ? "Adding…" : "Add & analyze"}
             </Button>
           </DialogFooter>
@@ -932,9 +1023,9 @@ function CreateDeliverableDialog({ orgSlug, projectId, onClose }: { orgSlug: str
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {["report", "strategy", "prd", "research_summary", "proposal", "memo"].map((k) => (
+                  {DELIVERABLE_KINDS.map((k) => (
                     <SelectItem key={k} value={k}>
-                      {k}
+                      {KIND_LABELS[k]}
                     </SelectItem>
                   ))}
                 </SelectContent>

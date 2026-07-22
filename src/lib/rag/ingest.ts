@@ -63,7 +63,7 @@ async function processDocument(documentId: string, buffer: Buffer): Promise<void
     await db.update(collections).set({ embeddingModelId }).where(eq(collections.id, collection.id));
   }
 
-  const text = await parseDocument(document.filename, buffer);
+  const { text, metadata } = await parseDocument(document.filename, buffer);
   if (!text.trim()) throw new Error("No text could be extracted from this file");
 
   const chunks = chunkText(text);
@@ -90,6 +90,6 @@ async function processDocument(documentId: string, buffer: Buffer): Promise<void
 
   await db
     .update(documents)
-    .set({ status: "ready", chunkCount: chunks.length, error: null })
+    .set({ status: "ready", chunkCount: chunks.length, error: null, metadata })
     .where(eq(documents.id, documentId));
 }

@@ -1,8 +1,10 @@
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, desc, eq, gt, inArray } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import {
   deliverables,
+  projectKnowledgeEdges,
+  projectKnowledgeEvidence,
   projectEvents,
   projectKnowledgeItems,
   projectSources,
@@ -10,6 +12,14 @@ import {
   projects,
 } from "@/lib/db/schema";
 
+import {
+  emergingThemes,
+  knowledgeGaps,
+  suggestedInvestigations,
+  type Gap,
+  type Investigation,
+  type Theme,
+} from "./intelligence";
 import { setItemStatus } from "./knowledge";
 import { staleItemIds } from "./staleness";
 
@@ -30,6 +40,9 @@ export interface Briefing {
   challenged: { id: string; content: string }[];
   risks: { id: string; content: string }[];
   stale: { id: string; type: string; content: string }[];
+  themes: Theme[];
+  gaps: Gap[];
+  investigations: Investigation[];
   timeline: { id: string; kind: string; summary: string; createdAt: string }[];
 }
 
@@ -62,6 +75,27 @@ export async function buildBriefing(projectId: string, userId: string): Promise<
     db.$count(deliverables, eq(deliverables.projectId, projectId)),
   ]);
 
+  // Proactive intelligence: emerging themes, gaps, and next investigations
+  // (deterministic, computed on open from the knowledge graph).
+  const edges = await db.query.projectKnowledgeEdges.findMany({
+    where: eq(projectKnowledgeEdges.projectId, projectId),
+    columns: { fromItemId: true, toItemId: true, relation: true },
+  });
+  const evidenceCountById = new Map<string, number>();
+  if (items.length > 0) {
+    const evidenceRows = await db.query.projectKnowledgeEvidence.findMany({
+      where: inArray(
+        projectKnowledgeEvidence.itemId,
+        items.map((i) => i.id)
+      ),
+      columns: { itemId: true },
+    });
+    for (const row of evidenceRows) evidenceCountById.set(row.itemId, (evidenceCountById.get(row.itemId) ?? 0) + 1);
+  }
+  const themes = emergingThemes(items, edges);
+  const gaps = knowledgeGaps(items, evidenceCountById);
+  const investigations = suggestedInvestigations(items, gaps);
+
   const recentEvents = await db.query.projectEvents.findMany({
     where: eq(projectEvents.projectId, projectId),
     orderBy: desc(projectEvents.createdAt),
@@ -89,6 +123,9 @@ export async function buildBriefing(projectId: string, userId: string): Promise<
     challenged: items.filter((i) => i.status === "challenged").map((i) => ({ id: i.id, content: i.content })),
     risks: active.filter((i) => i.type === "risk").map((i) => ({ id: i.id, content: i.content })),
     stale: items.filter((i) => i.status === "stale").map((i) => ({ id: i.id, type: i.type, content: i.content })),
+    themes,
+    gaps,
+    investigations,
     timeline: recentEvents.map((e) => ({ id: e.id, kind: e.kind, summary: e.summary, createdAt: e.createdAt.toISOString() })),
   };
 }
