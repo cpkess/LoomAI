@@ -10,3 +10,5 @@ export * from "./governance";
 export * from "./taskUpdates";
 export * from "./emails";
 export * from "./projects";
+export * from "./projectKnowledge";
+export * from "./deliverables";

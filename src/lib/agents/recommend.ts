@@ -13,8 +13,10 @@ import {
 } from "@/lib/db/schema";
 import { allOrgCollectionIds } from "@/lib/rag/knowledge";
 
+import { createLivingProject } from "@/lib/projects/create";
+
 import { getChiefAgent } from "./chief";
-import { agentReply, createAndEnqueueTask, enqueueProject } from "./engine";
+import { agentReply, createAndEnqueueTask } from "./engine";
 import { extractJson } from "./json";
 
 // The company recommends its own next moves. Once it has accumulated enough
@@ -202,19 +204,14 @@ export async function acceptRecommendation(
   let result: string;
 
   if (action.type === "recommend_project") {
-    const [project] = await db
-      .insert(projects)
-      .values({
-        organizationId: org.id,
-        title,
-        description: payload.description ?? null,
-        status: "planning",
-        managerAgentId: chief?.id ?? null,
-        createdByUserId: deciderUserId,
-      })
-      .returning();
-    enqueueProject(project.id);
-    result = `Project "${title}" created — the manager is planning it into milestones.`;
+    await createLivingProject({
+      orgId: org.id,
+      title,
+      description: payload.description ?? null,
+      managerAgentId: chief?.id ?? null,
+      createdByUserId: deciderUserId,
+    });
+    result = `Project "${title}" created — it's now a living workstream building its knowledge.`;
   } else {
     if (!chief) throw new Error("Hire an AI employee before accepting deliverable recommendations");
     await createAndEnqueueTask({

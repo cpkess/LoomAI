@@ -1,35 +1,23 @@
 import { and, eq } from "drizzle-orm";
 
+import { buildBriefing } from "@/lib/projects/briefing";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
-import { agents, projects } from "@/lib/db/schema";
+import { projects } from "@/lib/db/schema";
 
+// The resume briefing — what changed, what's stale, open questions, risks, and
+// recommended next steps. Marks the project viewed by this user.
 export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug: string; projectId: string }> }) {
   try {
     const { orgSlug, projectId } = await params;
     const ctx = await requireOrg(orgSlug, "member");
-
     const project = await db.query.projects.findFirst({
       where: and(eq(projects.id, projectId), eq(projects.organizationId, ctx.org.id)),
     });
     if (!project) return Response.json({ error: "Project not found" }, { status: 404 });
 
-    const manager = project.managerAgentId
-      ? await db.query.agents.findFirst({ where: eq(agents.id, project.managerAgentId) })
-      : null;
-
-    return Response.json({
-      project: {
-        id: project.id,
-        title: project.title,
-        description: project.description,
-        status: project.status,
-        nextSteps: project.nextSteps,
-        lastAnalyzedAt: project.lastAnalyzedAt,
-        createdAt: project.createdAt,
-        manager: manager ? { id: manager.id, name: manager.name, title: manager.title, avatarColor: manager.avatarColor } : null,
-      },
-    });
+    const briefing = await buildBriefing(projectId, ctx.user.id);
+    return Response.json({ briefing });
   } catch (err) {
     return errorResponse(err);
   }

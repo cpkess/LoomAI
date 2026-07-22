@@ -1,0 +1,296 @@
+import { and, asc, eq } from "drizzle-orm";
+import { z } from "zod";
+
+import { generation } from "@/lib/ai/generation";
+import { db } from "@/lib/db";
+import {
+  agents,
+  deliverableEvents,
+  deliverableSections,
+  deliverables,
+  organizations,
+  projects,
+  type Agent,
+  type Deliverable,
+  type DeliverableSection,
+  type Organization,
+} from "@/lib/db/schema";
+
+import { getChiefAgent } from "@/lib/agents/chief";
+import { agentReply, enqueueDeliverable } from "@/lib/agents/engine";
+import { extractJson } from "@/lib/agents/json";
+import { resolveRoleAgent, type Role } from "@/lib/agents/roles";
+import { limits } from "@/lib/ai/generation";
+import { recordProjectEvent, retrieveProjectContext } from "./knowledge";
+import { addSource } from "./sources";
+import { evaluateQualityGates, resolveQualityConfig, type SectionIssue } from "./quality";
+
+// The multi-stage deliverable engine: a DB-state-driven, re-entrant state
+// machine. Each tick performs one bounded unit of work (plan the outline, draft
+// a section, critique a section, run the quality gate, or assemble) and
+// re-enqueues itself until the deliverable is complete. Because all state lives
+// in the DB, a run resumes cleanly after a restart.
+
+const outlineSchema = z.object({
+  sections: z.array(z.object({ heading: z.string().min(2).max(200), brief: z.string().min(2).max(1000) })).min(1).max(12),
+});
+
+const critiqueSchema = z.object({
+  issues: z
+    .array(z.object({ kind: z.string().max(60), detail: z.string().max(500), severity: z.enum(["minor", "major", "blocking"]) }))
+    .max(10),
+});
+
+const gapSchema = z.object({
+  issues: z.array(z.object({ kind: z.string().max(60), detail: z.string().max(500), severity: z.enum(["minor", "major", "blocking"]) })).max(10).optional(),
+  addSections: z.array(z.object({ heading: z.string().min(2).max(200), brief: z.string().min(2).max(1000) })).max(4).optional(),
+});
+
+async function dEvent(deliverableId: string, kind: string, summary: string, sectionId?: string, role?: string): Promise<void> {
+  await db.insert(deliverableEvents).values({ deliverableId, kind, summary, sectionId: sectionId ?? null, role: role ?? null });
+}
+
+/** Non-terminal deliverables — re-enqueued on restart for resumability. */
+export async function activeDeliverableIds(): Promise<string[]> {
+  const rows = await db.query.deliverables.findMany({ columns: { id: true, status: true } });
+  return rows.filter((r) => !["completed", "failed", "cancelled"].includes(r.status)).map((r) => r.id);
+}
+
+export async function markDeliverableFailed(id: string, message: string): Promise<void> {
+  await db.update(deliverables).set({ status: "failed", error: message, updatedAt: new Date() }).where(eq(deliverables.id, id));
+}
+
+async function managerOf(d: Deliverable): Promise<Agent | null> {
+  if (d.managerAgentId) {
+    const a = await db.query.agents.findFirst({ where: eq(agents.id, d.managerAgentId) });
+    if (a) return a;
+  }
+  return getChiefAgent(d.organizationId);
+}
+
+/** Run one role with its built-in persona layered on. */
+async function runRole(orgId: string, role: Role, manager: Agent | null, org: Organization, prompt: string, gen = generation.work): Promise<string> {
+  const resolved = await resolveRoleAgent(orgId, role, manager);
+  if (!resolved) throw new Error("No AI employee available to produce this deliverable");
+  return agentReply(resolved.agent, org, prompt, { extraSystem: resolved.persona, gen, withTools: role === "researcher" });
+}
+
+/**
+ * Advance a deliverable by one step and re-enqueue until terminal. Safe to call
+ * repeatedly and after a restart.
+ */
+export async function advanceDeliverable(deliverableId: string): Promise<void> {
+  const d = await db.query.deliverables.findFirst({ where: eq(deliverables.id, deliverableId) });
+  if (!d || d.status === "completed" || d.status === "failed" || d.status === "cancelled") return;
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, d.projectId) });
+  if (!project) return;
+  const org = await db.query.organizations.findFirst({ where: eq(organizations.id, d.organizationId) });
+  if (!org) return;
+  const manager = await managerOf(d);
+
+  let terminal = false;
+
+  if (d.status === "planning") {
+    await planOutline(d, project, org, manager);
+  } else if (d.status === "producing" || d.status === "revising") {
+    terminal = await produceStep(d, project, org, manager);
+  } else if (d.status === "reviewing") {
+    terminal = await reviewStep(d, project, org, manager);
+  }
+
+  if (!terminal) enqueueDeliverable(deliverableId);
+}
+
+async function planOutline(d: Deliverable, project: { id: string; title: string; description: string | null; organizationId: string }, org: Organization, manager: Agent | null): Promise<void> {
+  const context = await retrieveProjectContext(project, `${d.title}\n${d.brief ?? ""}`);
+  const text = await runRole(
+    org.id,
+    "planner",
+    manager,
+    org,
+    [
+      `Plan the outline for a ${d.kind} titled "${d.title}".`,
+      d.brief ? `Brief: ${d.brief}` : "",
+      context ? `\nProject knowledge to build on:\n${context}\n` : "",
+      `Produce up to ${Math.min(12, limits.maxStageTasks + 4)} sections, each with a one-line brief of what it must cover. No overlap; complete coverage of the goal.`,
+      'Respond with JSON only: {"sections":[{"heading":"...","brief":"..."}]}',
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    generation.plan
+  );
+  const parsed = outlineSchema.safeParse(extractJson(text));
+  const sections = parsed.success ? parsed.data.sections : [{ heading: d.title, brief: d.brief ?? d.title }];
+
+  await db.insert(deliverableSections).values(
+    sections.map((s, i) => ({ deliverableId: d.id, orderIndex: i, heading: s.heading, brief: s.brief, role: "writer", status: "planned" as const }))
+  );
+  await db.update(deliverables).set({ status: "producing", updatedAt: new Date() }).where(eq(deliverables.id, d.id));
+  await dEvent(d.id, "outline_created", `Planned outline: ${sections.length} sections`);
+  await recordProjectEvent(project.id, "deliverable_created", `Started deliverable "${d.title}"`, { type: "deliverable", id: d.id });
+}
+
+/** Draft/redraft the next unwritten section; when all are drafted, move to review. */
+async function produceStep(d: Deliverable, project: { id: string; organizationId: string; title: string; description: string | null }, org: Organization, manager: Agent | null): Promise<boolean> {
+  const sections = await db.query.deliverableSections.findMany({
+    where: eq(deliverableSections.deliverableId, d.id),
+    orderBy: asc(deliverableSections.orderIndex),
+  });
+  const next = sections.find((s) => s.status === "planned" || s.status === "revising");
+  if (!next) {
+    await db.update(deliverables).set({ status: "reviewing", updatedAt: new Date() }).where(eq(deliverables.id, d.id));
+    return false;
+  }
+
+  const others = sections.filter((s) => s.id !== next.id).map((s) => `- ${s.heading}: ${s.brief ?? ""}`).join("\n");
+  const context = await retrieveProjectContext({ id: project.id, organizationId: project.organizationId }, `${next.heading}\n${next.brief ?? ""}`);
+  const issues = (next.evaluation as SectionIssue[]) ?? [];
+  const isRevision = next.status === "revising";
+
+  const role: Role = isRevision ? "editor" : "writer";
+  const content = await runRole(
+    org.id,
+    role,
+    manager,
+    org,
+    [
+      `${isRevision ? "Revise" : "Write"} the section "${next.heading}" of the ${d.kind} "${d.title}".`,
+      next.brief ? `This section must cover: ${next.brief}` : "",
+      `Other sections (for coherence, don't duplicate them):\n${others || "(none)"}`,
+      context ? `\nEvidence from the project's knowledge:\n${context}\n` : "",
+      isRevision && issues.length ? `Address these issues from review:\n${issues.map((i) => `- (${i.severity}) ${i.kind}: ${i.detail}`).join("\n")}` : "",
+      "Write only this section's content in Markdown (no top-level heading — it will be added on assembly).",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    generation.work
+  );
+
+  await db
+    .update(deliverableSections)
+    .set({ content: content.trim(), status: "drafted", revision: next.revision + (isRevision ? 1 : 0), updatedAt: new Date() })
+    .where(eq(deliverableSections.id, next.id));
+  await dEvent(d.id, isRevision ? "section_revised" : "section_drafted", `${isRevision ? "Revised" : "Drafted"}: ${next.heading}`, next.id, role);
+  return false;
+}
+
+/** Critique the next un-reviewed section; when all reviewed, run the quality gate. */
+async function reviewStep(d: Deliverable, project: { id: string; title: string }, org: Organization, manager: Agent | null): Promise<boolean> {
+  const sections = await db.query.deliverableSections.findMany({
+    where: eq(deliverableSections.deliverableId, d.id),
+    orderBy: asc(deliverableSections.orderIndex),
+  });
+  const next = sections.find((s) => s.status === "drafted");
+  if (next) {
+    const others = sections.filter((s) => s.id !== next.id).map((s) => `- ${s.heading}`).join("\n");
+    const text = await runRole(
+      org.id,
+      "critic",
+      manager,
+      org,
+      [
+        `Critically review this section of the ${d.kind} "${d.title}" for logical consistency, unsupported claims, weak arguments, inconsistent terminology, weak transitions, and deviation from the goal.`,
+        `Section "${next.heading}" — should cover: ${next.brief ?? ""}`,
+        `Other sections: ${others || "(none)"}`,
+        "",
+        next.content ?? "(empty)",
+        "",
+        'List concrete issues. Respond with JSON only: {"issues":[{"kind":"...","detail":"...","severity":"minor|major|blocking"}]}. Empty issues if the section is solid.',
+      ].join("\n"),
+      generation.extract
+    );
+    const parsed = critiqueSchema.safeParse(extractJson(text));
+    const issues = parsed.success ? parsed.data.issues : [];
+    await db.update(deliverableSections).set({ evaluation: issues, status: "reviewing", updatedAt: new Date() }).where(eq(deliverableSections.id, next.id));
+    await dEvent(d.id, "critique", `Reviewed "${next.heading}": ${issues.length} issue(s)`, next.id, "critic");
+    return false;
+  }
+
+  // All sections critiqued this round → cross-section gap analysis, then gate.
+  await gapAnalysis(d, org, manager, sections);
+  const reviewed = await db.query.deliverableSections.findMany({ where: eq(deliverableSections.deliverableId, d.id) });
+  const config = resolveQualityConfig(d.qualityConfig);
+  const gate = evaluateQualityGates(
+    reviewed.map((s) => ({ id: s.id, issues: (s.evaluation as SectionIssue[]) ?? [] })),
+    d.iteration,
+    config
+  );
+  await dEvent(d.id, "quality_gate", gate.passed ? "Quality gate passed" : gate.forced ? "Iteration cap reached — finalizing" : `Revising ${gate.sectionsToRevise.length} section(s)`);
+
+  if (gate.passed || gate.forced) {
+    for (const s of reviewed) {
+      if (s.status !== "dropped") await db.update(deliverableSections).set({ status: "approved" }).where(eq(deliverableSections.id, s.id));
+    }
+    await assemble(d, project, org);
+    return true;
+  }
+
+  // Send failing sections back for another revision round.
+  for (const s of reviewed) {
+    if (gate.sectionsToRevise.includes(s.id)) await db.update(deliverableSections).set({ status: "revising" }).where(eq(deliverableSections.id, s.id));
+    else if (s.status === "reviewing") await db.update(deliverableSections).set({ status: "approved" }).where(eq(deliverableSections.id, s.id));
+  }
+  await db.update(deliverables).set({ status: "producing", iteration: d.iteration + 1, updatedAt: new Date() }).where(eq(deliverables.id, d.id));
+  return false;
+}
+
+/** One cross-section pass (continuity + gaps) that may attach issues or add sections. */
+async function gapAnalysis(d: Deliverable, org: Organization, manager: Agent | null, sections: DeliverableSection[]): Promise<void> {
+  const outline = sections.map((s) => `- ${s.heading}: ${s.brief ?? ""}`).join("\n");
+  const text = await runRole(
+    org.id,
+    "gap_analysis",
+    manager,
+    org,
+    [
+      `Review the whole outline of the ${d.kind} "${d.title}" against its goal${d.brief ? ` (${d.brief})` : ""}. Find missing topics, redundant/overlapping sections, and structural gaps.`,
+      `Outline:\n${outline}`,
+      'Respond with JSON only: {"issues":[{"kind":"...","detail":"...","severity":"minor|major|blocking"}], "addSections":[{"heading":"...","brief":"..."}]}. Use addSections only for genuinely missing coverage; keep it empty otherwise.',
+    ].join("\n"),
+    generation.extract
+  );
+  const parsed = gapSchema.safeParse(extractJson(text));
+  if (!parsed.success) return;
+
+  // Add newly-identified missing sections (living outline evolves).
+  const maxOrder = Math.max(-1, ...sections.map((s) => s.orderIndex));
+  for (const [i, s] of (parsed.data.addSections ?? []).entries()) {
+    await db.insert(deliverableSections).values({ deliverableId: d.id, orderIndex: maxOrder + 1 + i, heading: s.heading, brief: s.brief, role: "writer", status: "planned" });
+    await dEvent(d.id, "outline_changed", `Added missing section: ${s.heading}`);
+  }
+  // Attach any structural issues to the first section so the gate can react.
+  const gapIssues = parsed.data.issues ?? [];
+  if (gapIssues.length && sections[0]) {
+    const existing = (sections[0].evaluation as SectionIssue[]) ?? [];
+    await db.update(deliverableSections).set({ evaluation: [...existing, ...gapIssues] }).where(eq(deliverableSections.id, sections[0].id));
+    await dEvent(d.id, "gap_found", `${gapIssues.length} structural issue(s)`);
+  }
+  // If we added sections, they still need drafting → bounce back to producing.
+  if ((parsed.data.addSections ?? []).length > 0) {
+    await db.update(deliverables).set({ status: "producing", updatedAt: new Date() }).where(eq(deliverables.id, d.id));
+  }
+}
+
+/** Assemble approved sections into the final document and close the loop. */
+async function assemble(d: Deliverable, project: { id: string; title: string }, org: Organization): Promise<void> {
+  const sections = await db.query.deliverableSections.findMany({
+    where: and(eq(deliverableSections.deliverableId, d.id), eq(deliverableSections.status, "approved")),
+    orderBy: asc(deliverableSections.orderIndex),
+  });
+  const body = sections.map((s) => `## ${s.heading}\n\n${(s.content ?? "").trim()}`).join("\n\n");
+  const content = `# ${d.title}\n\n${body}`;
+
+  await db.update(deliverables).set({ status: "completed", content, updatedAt: new Date() }).where(eq(deliverables.id, d.id));
+  await dEvent(d.id, "assembled", `Assembled ${sections.length} sections into the final ${d.kind}`);
+  await recordProjectEvent(project.id, "deliverable_completed", `Completed deliverable "${d.title}"`, { type: "deliverable", id: d.id });
+
+  // Loop closure: fold the deliverable's insights back into the project's
+  // knowledge so future work builds on it.
+  await addSource({
+    projectId: d.projectId,
+    orgId: org.id,
+    kind: "task_output",
+    title: `Deliverable: ${d.title}`,
+    content: content.slice(0, 12000),
+  }).catch(() => {});
+}

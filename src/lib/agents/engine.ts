@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { generateText, stepCountIs } from "ai";
 import { z } from "zod";
 
@@ -14,18 +14,14 @@ import {
   agents,
   boardEmails,
   organizations,
-  projectStages,
-  projects,
   type Agent,
   type MessageAction,
   type Organization,
-  type ProjectStage,
 } from "@/lib/db/schema";
 import { addTextToKnowledge, defaultKnowledgeCollectionId } from "@/lib/rag/knowledge";
 import { deriveTitle, isKnowledgeCandidate } from "@/lib/rag/knowledge-heuristics";
 import { retrieveContext } from "@/lib/rag/retrieve";
 
-import { getChiefAgent } from "./chief";
 import { extractJson } from "./json";
 import { fallbackModelId, resolveAgentRuntime } from "./resolve";
 
@@ -42,13 +38,12 @@ import { fallbackModelId, resolveAgentRuntime } from "./resolve";
 //      org's auto-knowledge setting is on, the coordinator decides whether it
 //      is reusable reference material and files it in the knowledge base.
 //
-// Projects are larger, longer initiatives. A project manager plans a project
-// into ordered MILESTONES (stages), each with a GATE: an `auto` gate advances
-// the moment its tasks finish; a `review` gate pauses for the Board to approve
-// or request changes. Each milestone is planned into tasks only when it becomes
-// active, so feedback at one gate informs the planning of the next — the
-// project gets smarter as it runs. When every milestone is done the manager
-// writes a project summary.
+// The queue also drives the Living Projects engines: `analyze` folds a new
+// project source into the knowledge graph, and `deliverable` advances a
+// multi-stage deliverable one step at a time (both live in lib/projects and are
+// dispatched via dynamic import to avoid static cycles). Because their state
+// lives in the DB, `resumePendingWork` can re-enqueue interrupted work after a
+// restart — the non-durable queue stays restart-safe.
 //
 // A single per-task activity log (plan, subtask results, deliverables, and
 // feedback) is the shared memory every agent reads before working. Runs
@@ -57,7 +52,7 @@ import { fallbackModelId, resolveAgentRuntime } from "./resolve";
 
 interface QueueEntry {
   id: string;
-  mode: "run" | "continue" | "project" | "stage";
+  mode: "run" | "continue" | "analyze" | "deliverable";
 }
 
 const queue: QueueEntry[] = [];
@@ -68,44 +63,71 @@ export function enqueueTask(taskId: string, mode: "run" | "continue" = "run"): v
   if (!running) void drain();
 }
 
-export function enqueueProject(projectId: string): void {
-  queue.push({ id: projectId, mode: "project" });
+/** Analyze a project source into the knowledge graph (off the request thread). */
+export function enqueueSourceAnalysis(sourceId: string): void {
+  queue.push({ id: sourceId, mode: "analyze" });
   if (!running) void drain();
 }
 
-/** Plan a milestone into tasks and start it (off the request thread). */
-export function enqueueStage(stageId: string): void {
-  queue.push({ id: stageId, mode: "stage" });
+/** Advance a multi-stage deliverable by one production step. */
+export function enqueueDeliverable(deliverableId: string): void {
+  queue.push({ id: deliverableId, mode: "deliverable" });
   if (!running) void drain();
 }
+
+let resumed = false;
 
 async function drain(): Promise<void> {
   running = true;
   try {
+    // On the first drain of this process, also sweep up any Living-Projects work
+    // that was interrupted by a restart (resumable execution).
+    if (!resumed) {
+      resumed = true;
+      await resumePendingWork().catch((err) => console.error("resumePendingWork failed", err));
+    }
     while (queue.length > 0) {
       const entry = queue.shift()!;
       try {
-        if (entry.mode === "project") await planProject(entry.id);
-        else if (entry.mode === "stage") await planStage(entry.id);
-        else if (entry.mode === "continue") await continueTask(entry.id);
-        else await runTask(entry.id);
+        if (entry.mode === "analyze") {
+          const { analyzeSource } = await import("@/lib/projects/analysis");
+          await analyzeSource(entry.id);
+        } else if (entry.mode === "deliverable") {
+          const { advanceDeliverable } = await import("@/lib/projects/deliverables");
+          await advanceDeliverable(entry.id);
+        } else if (entry.mode === "continue") {
+          await continueTask(entry.id);
+        } else {
+          await runTask(entry.id);
+        }
       } catch (err) {
         console.error(`${entry.mode} ${entry.id} failed`, err);
-        if (entry.mode === "project") {
-          await db.update(projects).set({ status: "in_progress", updatedAt: new Date() }).where(eq(projects.id, entry.id));
-        } else if (entry.mode === "stage") {
-          await db.update(projectStages).set({ status: "pending", updatedAt: new Date() }).where(eq(projectStages.id, entry.id));
+        if (entry.mode === "analyze") {
+          const { markSourceError } = await import("@/lib/projects/analysis");
+          await markSourceError(entry.id, err instanceof Error ? err.message : String(err)).catch(() => {});
+        } else if (entry.mode === "deliverable") {
+          const { markDeliverableFailed } = await import("@/lib/projects/deliverables");
+          await markDeliverableFailed(entry.id, err instanceof Error ? err.message : String(err)).catch(() => {});
         } else {
-          await setTask(entry.id, {
-            status: "failed",
-            error: err instanceof Error ? err.message : String(err),
-          });
+          await setTask(entry.id, { status: "failed", error: err instanceof Error ? err.message : String(err) });
         }
       }
     }
   } finally {
     running = false;
   }
+}
+
+/**
+ * Re-enqueue interrupted Living-Projects work after a restart: pending source
+ * analyses and non-terminal deliverables. The queue is in-memory, but state is
+ * durable, so this makes execution resumable.
+ */
+export async function resumePendingWork(): Promise<void> {
+  const { pendingSourceIds } = await import("@/lib/projects/analysis");
+  const { activeDeliverableIds } = await import("@/lib/projects/deliverables");
+  for (const id of await pendingSourceIds()) enqueueSourceAnalysis(id);
+  for (const id of await activeDeliverableIds()) enqueueDeliverable(id);
 }
 
 async function setTask(
@@ -222,40 +244,31 @@ async function taskLog(taskId: string): Promise<string> {
 }
 
 /**
- * Record the deliverable, mark the task complete, email the Board, auto-curate
- * knowledge, and advance the parent project if any. The deliverable is kept so
- * the requester can review it and follow up with feedback.
+ * Record the deliverable, mark the task complete, email the Board, and
+ * auto-curate knowledge. The deliverable is kept so the requester can review it
+ * and follow up with feedback.
  */
 async function finalize(
   taskId: string,
   coordinator: Agent,
   org: Organization,
-  task: { id: string; title: string; description: string | null; projectId?: string | null; stageId?: string | null },
+  task: { id: string; title: string; description: string | null },
   deliverable: string
 ): Promise<void> {
   await setTask(taskId, { result: deliverable, status: "completed", error: null });
   await recordUpdate(taskId, "result", deliverable);
 
-  // A task inside a project milestone doesn't email the Board on its own — the
-  // milestone reports up when the whole stage finishes. Standalone tasks email
-  // their deliverable straight to the Board room.
-  if (!task.projectId) {
-    await db.insert(boardEmails).values({
-      organizationId: org.id,
-      taskId,
-      fromAgentId: coordinator.id,
-      fromName: `${coordinator.name} (${coordinator.title})`,
-      subject: `Task complete: ${task.title}`,
-      body: deliverable,
-      outcome: "completed",
-    });
-  }
+  await db.insert(boardEmails).values({
+    organizationId: org.id,
+    taskId,
+    fromAgentId: coordinator.id,
+    fromName: `${coordinator.name} (${coordinator.title})`,
+    subject: `Task complete: ${task.title}`,
+    body: deliverable,
+    outcome: "completed",
+  });
 
   await curateKnowledge(coordinator, org, task, deliverable, task.id);
-
-  // Advance the project this task belongs to.
-  if (task.stageId) await checkStageCompletion(task.stageId);
-  else if (task.projectId) await checkProjectCompletion(task.projectId);
 }
 
 const curationSchema = z.object({
@@ -591,591 +604,4 @@ export async function createAndEnqueueTask(options: {
   await db.insert(agentTaskAssignments).values({ taskId: task.id, agentId: options.coordinatorAgentId, role: "coordinator" });
   enqueueTask(task.id);
   return task.id;
-}
-
-/**
- * Decide which milestone a manually-added project task should join, so it
- * participates in the stage/gate flow like planned tasks. Prefers an
- * in-progress milestone; falls back to any not-yet-complete one; and when the
- * whole project has already finished, opens a fresh "Additional work"
- * milestone (auto gate) and reactivates the project. Returns null only for
- * legacy projects that have no milestones at all.
- */
-export async function resolveManualTaskStage(projectId: string): Promise<string | null> {
-  const stages = await db.query.projectStages.findMany({
-    where: eq(projectStages.projectId, projectId),
-    orderBy: asc(projectStages.orderIndex),
-  });
-  if (stages.length === 0) return null;
-
-  const active =
-    stages.find((s) => s.status === "in_progress") ??
-    stages.find((s) => s.status === "awaiting_review") ??
-    stages.find((s) => s.status === "pending");
-  if (active) return active.id;
-
-  // Everything is done — open a follow-up milestone.
-  const maxOrder = Math.max(...stages.map((s) => s.orderIndex));
-  const [stage] = await db
-    .insert(projectStages)
-    .values({
-      projectId,
-      orderIndex: maxOrder + 1,
-      title: "Additional work",
-      description: "Follow-up tasks added after the project's milestones completed.",
-      gate: "auto",
-      status: "in_progress",
-    })
-    .returning();
-  await db.update(projects).set({ status: "in_progress", updatedAt: new Date() }).where(eq(projects.id, projectId));
-  return stage.id;
-}
-
-/** Resolve a project's manager (its assigned agent, else the org's chief). */
-async function projectManager(project: { managerAgentId: string | null; organizationId: string }): Promise<Agent | null> {
-  return project.managerAgentId
-    ? ((await db.query.agents.findFirst({ where: eq(agents.id, project.managerAgentId) })) ?? null)
-    : getChiefAgent(project.organizationId);
-}
-
-const milestonePlanSchema = z.object({
-  milestones: z
-    .array(
-      z.object({
-        title: z.string().min(1),
-        description: z.string().min(1),
-        gate: z.enum(["auto", "review"]).optional(),
-      })
-    )
-    .min(1)
-    .max(limits.maxMilestones),
-});
-
-/**
- * Plan a project into ordered MILESTONES. The manager proposes phases, each
- * with a gate (auto/review); we persist them as `pending` stages and activate
- * the first one. Tasks for a milestone are planned only when it becomes active,
- * so feedback at earlier gates shapes later phases.
- */
-async function planProject(projectId: string): Promise<void> {
-  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
-  if (!project || project.status === "cancelled") return;
-  const org = await db.query.organizations.findFirst({ where: eq(organizations.id, project.organizationId) });
-  if (!org) throw new Error("Organization not found");
-  const manager = await projectManager(project);
-  if (!manager) throw new Error("No project manager available");
-
-  // Don't re-plan a project that already has milestones (e.g. a retry).
-  const existing = await db.query.projectStages.findMany({ where: eq(projectStages.projectId, projectId) });
-  if (existing.length === 0) {
-    const planText = await agentReply(
-      manager,
-      org,
-      [
-        "You are the project manager. Break this project into a sequence of milestones (phases) that together deliver it.",
-        "",
-        `Project: ${project.title}${project.description ? `\n${project.description}` : ""}`,
-        "",
-        `Produce up to ${limits.maxMilestones} milestones in delivery order. Each needs a clear deliverable.`,
-        'Set "gate":"review" on milestones where the Board should review progress before continuing (key decision points, before expensive or irreversible work, and the final delivery); use "gate":"auto" for routine phases that should flow straight through.',
-        'Respond with JSON only: {"milestones":[{"title":"...","description":"...","gate":"auto|review"}]}',
-      ].join("\n"),
-      { gen: generation.plan }
-    );
-    const parsed = milestonePlanSchema.safeParse(extractJson(planText));
-    const milestones = parsed.success
-      ? parsed.data.milestones
-      : [{ title: project.title, description: project.description ?? project.title, gate: "review" as const }];
-
-    await db.insert(projectStages).values(
-      milestones.map((m, i) => ({
-        projectId,
-        orderIndex: i,
-        title: m.title,
-        description: m.description,
-        gate: m.gate ?? ("auto" as const),
-        status: "pending" as const,
-      }))
-    );
-  }
-
-  await db.update(projects).set({ status: "in_progress", updatedAt: new Date() }).where(eq(projects.id, projectId));
-  await advanceProject(projectId);
-}
-
-const stageTaskSchema = z.object({
-  tasks: z
-    .array(z.object({ title: z.string().min(1), description: z.string().min(1) }))
-    .min(1)
-    .max(limits.maxStageTasks),
-});
-
-/** Prior completed milestones, formatted as context for planning the next. */
-async function priorStageContext(projectId: string, beforeOrder: number): Promise<string> {
-  const done = await db.query.projectStages.findMany({
-    where: and(eq(projectStages.projectId, projectId)),
-    orderBy: asc(projectStages.orderIndex),
-  });
-  const prior = done.filter((s) => s.orderIndex < beforeOrder && (s.summary || s.reviewFeedback));
-  if (prior.length === 0) return "";
-  return [
-    "Context from completed milestones so far (build on these; honor the Board's feedback):",
-    ...prior.map(
-      (s) =>
-        `### ${s.title}\n${s.summary ?? "(no summary)"}${s.reviewFeedback ? `\nBoard feedback: ${s.reviewFeedback}` : ""}`
-    ),
-  ].join("\n\n");
-}
-
-/**
- * Plan a milestone into tasks and start it. Each task is coordinated by the
- * project manager, who delegates it across their reports through the normal
- * task engine.
- */
-async function planStage(stageId: string): Promise<void> {
-  const stage = await db.query.projectStages.findFirst({ where: eq(projectStages.id, stageId) });
-  if (!stage || stage.status !== "pending") return;
-  const project = await db.query.projects.findFirst({ where: eq(projects.id, stage.projectId) });
-  if (!project || project.status === "cancelled") return;
-  const org = await db.query.organizations.findFirst({ where: eq(organizations.id, project.organizationId) });
-  if (!org) throw new Error("Organization not found");
-  const manager = await projectManager(project);
-  if (!manager) throw new Error("No project manager available");
-
-  const context = await priorStageContext(stage.projectId, stage.orderIndex);
-  const planText = await agentReply(
-    manager,
-    org,
-    [
-      `You are the project manager delivering the milestone "${stage.title}" of the project "${project.title}".`,
-      stage.description ? `Milestone goal: ${stage.description}` : "",
-      context ? `\n${context}\n` : "",
-      `Break THIS milestone into up to ${limits.maxStageTasks} concrete, independently-workable tasks. Only create as many as the milestone truly needs.`,
-      'Respond with JSON only: {"tasks":[{"title":"...","description":"..."}]}',
-    ]
-      .filter(Boolean)
-      .join("\n"),
-    { gen: generation.plan }
-  );
-  const parsed = stageTaskSchema.safeParse(extractJson(planText));
-  const tasks = parsed.success
-    ? parsed.data.tasks
-    : [{ title: stage.title, description: stage.description ?? stage.title }];
-
-  await db.update(projectStages).set({ status: "in_progress", updatedAt: new Date() }).where(eq(projectStages.id, stageId));
-
-  for (const t of tasks) {
-    await createAndEnqueueTask({
-      orgId: org.id,
-      projectId: stage.projectId,
-      stageId: stage.id,
-      title: t.title,
-      description: t.description,
-      coordinatorAgentId: manager.id,
-      createdByAgentId: manager.id,
-    });
-  }
-}
-
-/** Summarize a milestone from its tasks — verbatim for a single task (no LLM), synthesized otherwise. */
-async function summarizeStage(
-  stage: ProjectStage,
-  tasks: { title: string; status: string; result: string | null; error: string | null }[],
-  manager: Agent | null,
-  org: Organization
-): Promise<string> {
-  const succeeded = tasks.filter((t) => t.status === "completed" && t.result);
-  if (succeeded.length === 1 && tasks.length === 1) return succeeded[0].result!;
-
-  if (manager && succeeded.length > 0) {
-    try {
-      return await agentReply(
-        manager,
-        org,
-        [
-          `The milestone "${stage.title}" is finished. Its tasks and results:`,
-          "",
-          ...tasks.map((t) => `### ${t.title} (${t.status})\n${t.result ?? t.error ?? "(no result)"}`),
-          "",
-          "Write a concise summary of what this milestone delivered, for the Board and for the next milestone to build on.",
-        ].join("\n"),
-        { gen: generation.summary }
-      );
-    } catch (err) {
-      console.error("stage summary failed", err);
-    }
-  }
-  return tasks.map((t) => `- ${t.title}: ${t.status}`).join("\n");
-}
-
-/**
- * Called when a task in a milestone finishes. When every task in the milestone
- * is terminal, summarize it and apply its gate: an `auto` gate advances the
- * project immediately; a `review` gate pauses for the Board.
- */
-async function checkStageCompletion(stageId: string): Promise<void> {
-  const stage = await db.query.projectStages.findFirst({ where: eq(projectStages.id, stageId) });
-  if (!stage || stage.status !== "in_progress") return;
-
-  const tasks = await db.query.agentTasks.findMany({ where: eq(agentTasks.stageId, stageId) });
-  if (tasks.length === 0) return;
-  if (!tasks.every((t) => t.status === "completed" || t.status === "failed" || t.status === "cancelled")) return;
-
-  const project = await db.query.projects.findFirst({ where: eq(projects.id, stage.projectId) });
-  if (!project) return;
-  const org = await db.query.organizations.findFirst({ where: eq(organizations.id, project.organizationId) });
-  if (!org) return;
-  const manager = await projectManager(project);
-
-  const summary = await summarizeStage(stage, tasks, manager, org);
-  await db.update(projectStages).set({ summary, updatedAt: new Date() }).where(eq(projectStages.id, stageId));
-
-  if (stage.gate === "review") {
-    await db.update(projectStages).set({ status: "awaiting_review", updatedAt: new Date() }).where(eq(projectStages.id, stageId));
-    await db.update(projects).set({ status: "awaiting_review", updatedAt: new Date() }).where(eq(projects.id, project.id));
-    await db.insert(boardEmails).values({
-      organizationId: org.id,
-      fromAgentId: manager?.id ?? null,
-      fromName: manager ? `${manager.name} (${manager.title})` : "Project manager",
-      subject: `Milestone ready for review: ${stage.title} — ${project.title}`,
-      body: `${summary}\n\n---\nApprove this milestone or request changes on the project's page.`,
-      outcome: "review",
-    });
-    return;
-  }
-
-  await completeStage(stage, project, org, manager, summary);
-}
-
-/** Mark a milestone complete, capture its knowledge, and advance the project. */
-async function completeStage(
-  stage: ProjectStage,
-  project: { id: string },
-  org: Organization,
-  manager: Agent | null,
-  summary: string
-): Promise<void> {
-  await db.update(projectStages).set({ status: "completed", updatedAt: new Date() }).where(eq(projectStages.id, stage.id));
-  if (manager) {
-    await curateKnowledge(manager, org, { title: `${stage.title}`, description: stage.description }, summary).catch(() => {});
-  }
-  await advanceProject(project.id);
-}
-
-/**
- * Insert a new milestone (a "branch step") right after `afterOrderIndex`,
- * shifting later milestones down so ordering stays clean. Branch steps are how
- * the Board's feedback becomes a formal, visible stage in the project plan.
- */
-async function insertBranchStage(
-  projectId: string,
-  afterOrderIndex: number,
-  fields: { title: string; description: string; gate: "auto" | "review" }
-): Promise<ProjectStage> {
-  await db
-    .update(projectStages)
-    .set({ orderIndex: sql`${projectStages.orderIndex} + 1`, updatedAt: new Date() })
-    .where(and(eq(projectStages.projectId, projectId), gt(projectStages.orderIndex, afterOrderIndex)));
-  const [stage] = await db
-    .insert(projectStages)
-    .values({
-      projectId,
-      orderIndex: afterOrderIndex + 1,
-      title: fields.title,
-      description: fields.description,
-      gate: fields.gate,
-      status: "pending",
-      isBranch: true,
-    })
-    .returning();
-  return stage;
-}
-
-/**
- * Board review of a milestone at a `review` gate: approve to advance, or
- * request changes — which records the delivered version and creates a **new
- * branch milestone** that addresses the feedback and comes back for review.
- */
-export async function reviewStage(
-  stageId: string,
-  decision: "approve" | "request_changes",
-  feedback: string | null
-): Promise<void> {
-  const stage = await db.query.projectStages.findFirst({ where: eq(projectStages.id, stageId) });
-  if (!stage || stage.status !== "awaiting_review") throw new Error("This milestone is not awaiting review");
-  const project = await db.query.projects.findFirst({ where: eq(projects.id, stage.projectId) });
-  if (!project) throw new Error("Project not found");
-  const org = await db.query.organizations.findFirst({ where: eq(organizations.id, project.organizationId) });
-  if (!org) throw new Error("Organization not found");
-  const manager = await projectManager(project);
-
-  await db
-    .update(projectStages)
-    .set({ reviewFeedback: feedback ?? stage.reviewFeedback, updatedAt: new Date() })
-    .where(eq(projectStages.id, stageId));
-
-  if (decision === "approve") {
-    await db.update(projects).set({ status: "in_progress", updatedAt: new Date() }).where(eq(projects.id, project.id));
-    await completeStage(stage, project, org, manager, stage.summary ?? "");
-    return;
-  }
-
-  // Request changes: the first version is delivered; the feedback becomes a new
-  // branch milestone (a formal step) inserted right after this one.
-  await db.update(projectStages).set({ status: "completed", updatedAt: new Date() }).where(eq(projectStages.id, stageId));
-  const branch = await insertBranchStage(project.id, stage.orderIndex, {
-    title: `Revision: ${stage.title}`,
-    description: [
-      `The Board reviewed "${stage.title}" and requested changes.`,
-      stage.summary ? `\nWhat was delivered:\n${stage.summary}` : "",
-      feedback ? `\nChanges to make:\n${feedback}` : "",
-      "\nDeliver a revised version that fully addresses the feedback.",
-    ]
-      .filter(Boolean)
-      .join("\n"),
-    gate: "review",
-  });
-  await db.update(projects).set({ status: "in_progress", updatedAt: new Date() }).where(eq(projects.id, project.id));
-  await enqueueStage(branch.id);
-}
-
-/**
- * Board feedback on a project (or a specific milestone) becomes a formal branch
- * milestone that addresses it and returns for review. Works on an in-flight or
- * a completed project — feedback always produces a visible new step.
- */
-export async function addProjectFeedback(
-  projectId: string,
-  message: string,
-  afterStageId?: string | null
-): Promise<{ stageId: string }> {
-  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
-  if (!project || project.status === "cancelled") throw new Error("Project not found");
-
-  const stages = await db.query.projectStages.findMany({
-    where: eq(projectStages.projectId, projectId),
-    orderBy: asc(projectStages.orderIndex),
-  });
-  const anchor = afterStageId ? stages.find((s) => s.id === afterStageId) : undefined;
-  const afterOrderIndex = anchor ? anchor.orderIndex : stages.reduce((m, s) => Math.max(m, s.orderIndex), -1);
-
-  const branch = await insertBranchStage(projectId, afterOrderIndex, {
-    title: anchor ? `Revision: ${anchor.title}` : "Follow-up from Board feedback",
-    description: [
-      anchor ? `The Board gave feedback on "${anchor.title}".` : "The Board gave feedback on this project.",
-      anchor?.summary ? `\nWhat was delivered:\n${anchor.summary}` : "",
-      `\nFeedback to address:\n${message}`,
-      "\nDeliver work that fully addresses this feedback.",
-    ]
-      .filter(Boolean)
-      .join("\n"),
-    gate: "review",
-  });
-
-  await db.update(projects).set({ status: "in_progress", updatedAt: new Date() }).where(eq(projects.id, projectId));
-  // Start the branch now unless another milestone is actively running (it will
-  // be picked up in order when the running one finishes).
-  const active = stages.some((s) => s.status === "in_progress");
-  if (!active) await enqueueStage(branch.id);
-  return { stageId: branch.id };
-}
-
-/** Activate the next pending milestone, or complete the project when none remain. */
-async function advanceProject(projectId: string): Promise<void> {
-  const next = await db.query.projectStages.findFirst({
-    where: and(eq(projectStages.projectId, projectId), eq(projectStages.status, "pending")),
-    orderBy: asc(projectStages.orderIndex),
-  });
-  if (next) {
-    await db.update(projects).set({ status: "in_progress", updatedAt: new Date() }).where(eq(projects.id, projectId));
-    enqueueStage(next.id);
-    return;
-  }
-  await completeProject(projectId);
-}
-
-/**
- * Build a comprehensive project report the manager sends to the Board. It is
- * assembled in sections — a detailed, milestone-by-milestone account (a "map"
- * over completed milestones, each grounded in that milestone's own tasks) plus
- * an executive overview (the "reduce") — then combined deterministically into a
- * single document so nothing accomplished is left out.
- */
-async function composeProjectReport(
-  project: { title: string; description: string | null },
-  stages: ProjectStage[],
-  org: Organization,
-  manager: Agent | null
-): Promise<string> {
-  const done = stages.filter((s) => s.status === "completed");
-  if (done.length === 0) return stages.map((s) => `- ${s.title}: ${s.status}`).join("\n");
-
-  // Map: a thorough section per milestone, grounded in that milestone's tasks.
-  const sections: { title: string; body: string }[] = [];
-  for (const stage of done) {
-    let body = (stage.summary ?? "").trim();
-    if (manager) {
-      const tasks = await db.query.agentTasks.findMany({ where: eq(agentTasks.stageId, stage.id) });
-      const detail = tasks
-        .map((t) => `#### ${t.title} (${t.status})\n${t.result ?? t.error ?? "(no result)"}`)
-        .join("\n\n");
-      try {
-        body = (
-          await agentReply(
-            manager,
-            org,
-            [
-              `You are writing one section of the report for the project "${project.title}": the milestone "${stage.title}".`,
-              stage.description ? `Milestone goal: ${stage.description}` : "",
-              "",
-              "Everything done in this milestone:",
-              detail || stage.summary || "(no detail recorded)",
-              "",
-              "Write a thorough section covering what this milestone accomplished — the work performed, decisions made, and the concrete deliverables and outcomes. Be complete, but don't cover other milestones.",
-            ]
-              .filter(Boolean)
-              .join("\n"),
-            { gen: generation.summary }
-          )
-        ).trim();
-      } catch (err) {
-        console.error("stage section failed", err);
-      }
-    }
-    sections.push({ title: stage.title, body: body || "(no summary)" });
-  }
-
-  // Reduce: an executive overview across every section.
-  let overview = "";
-  if (manager) {
-    try {
-      overview = (
-        await agentReply(
-          manager,
-          org,
-          [
-            `Write a comprehensive executive summary of the project "${project.title}" for the Board.`,
-            project.description ? `Project goal: ${project.description}` : "",
-            "",
-            "The project delivered these milestones:",
-            ...sections.map((s) => `### ${s.title}\n${s.body}`),
-            "",
-            "Summarize the overall outcome end to end: what was achieved, the key results and decisions, and where things stand now. A few paragraphs is appropriate.",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-          { gen: generation.summary }
-        )
-      ).trim();
-    } catch (err) {
-      console.error("project overview failed", err);
-    }
-  }
-
-  // Combine into one sectioned document.
-  const parts = [`# ${project.title} — Project Report`];
-  if (overview) parts.push(`## Executive summary\n\n${overview}`);
-  parts.push("## Accomplishments by milestone");
-  for (const s of sections) parts.push(`### ${s.title}\n\n${s.body}`);
-  return parts.join("\n\n");
-}
-
-/**
- * All milestones done: the manager writes a comprehensive sectioned report, the
- * project is marked complete, the Board is emailed, and the report is captured
- * as knowledge.
- */
-async function completeProject(projectId: string): Promise<void> {
-  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
-  if (!project || project.status === "completed" || project.status === "cancelled") return;
-
-  const stages = await db.query.projectStages.findMany({
-    where: eq(projectStages.projectId, projectId),
-    orderBy: asc(projectStages.orderIndex),
-  });
-  // Only complete once every milestone is in a terminal state.
-  if (stages.some((s) => s.status !== "completed" && s.status !== "skipped")) return;
-
-  const org = await db.query.organizations.findFirst({ where: eq(organizations.id, project.organizationId) });
-  if (!org) return;
-  const manager = await projectManager(project);
-
-  const summary = await composeProjectReport(project, stages, org, manager);
-
-  await db.update(projects).set({ status: "completed", summary, updatedAt: new Date() }).where(eq(projects.id, projectId));
-  await db.insert(boardEmails).values({
-    organizationId: org.id,
-    fromAgentId: manager?.id ?? null,
-    fromName: manager ? `${manager.name} (${manager.title})` : "Project manager",
-    subject: `Project complete: ${project.title}`,
-    body: summary,
-    outcome: "completed",
-  });
-  if (manager) {
-    await curateKnowledge(manager, org, { title: project.title, description: project.description }, summary).catch(() => {});
-  }
-
-  // Fresh knowledge just landed — let the company proactively suggest what to
-  // do next (throttled + gated inside). Dynamic import breaks the static cycle
-  // (recommend.ts imports this engine).
-  try {
-    const { generateRecommendations } = await import("./recommend");
-    await generateRecommendations(org.id);
-  } catch (err) {
-    console.error("recommendation generation failed", err);
-  }
-}
-
-/**
- * Legacy completion path for projects created before milestones existed (their
- * tasks have a projectId but no stageId). Projects that use milestones are
- * driven entirely by the stage flow above.
- */
-async function checkProjectCompletion(projectId: string): Promise<void> {
-  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
-  if (!project || project.status === "completed" || project.status === "cancelled") return;
-
-  const stages = await db.query.projectStages.findMany({ where: eq(projectStages.projectId, projectId) });
-  if (stages.length > 0) return; // milestone flow owns this project
-
-  const tasks = await db.query.agentTasks.findMany({ where: eq(agentTasks.projectId, projectId) });
-  if (tasks.length === 0) return;
-  if (!tasks.every((t) => t.status === "completed" || t.status === "failed")) return;
-
-  const org = await db.query.organizations.findFirst({ where: eq(organizations.id, project.organizationId) });
-  if (!org) return;
-  const manager = await projectManager(project);
-
-  let summary = tasks.map((t) => `- ${t.title}: ${t.status}`).join("\n");
-  if (manager) {
-    try {
-      summary = await agentReply(
-        manager,
-        org,
-        [
-          `The project "${project.title}" is complete. Its tasks and their results:`,
-          "",
-          ...tasks.map((t) => `### ${t.title} (${t.status})\n${t.result ?? t.error ?? "(no result)"}`),
-          "",
-          "Write a concise executive summary of the project outcome for the Board.",
-        ].join("\n"),
-        { gen: generation.summary }
-      );
-    } catch (err) {
-      console.error("project summary failed", err);
-    }
-  }
-
-  await db.update(projects).set({ status: "completed", summary, updatedAt: new Date() }).where(eq(projects.id, projectId));
-  await db.insert(boardEmails).values({
-    organizationId: org.id,
-    fromAgentId: manager?.id ?? null,
-    fromName: manager ? `${manager.name} (${manager.title})` : "Project manager",
-    subject: `Project complete: ${project.title}`,
-    body: summary,
-    outcome: "completed",
-  });
-  if (manager) {
-    await curateKnowledge(manager, org, { title: project.title, description: project.description }, summary).catch(() => {});
-  }
 }

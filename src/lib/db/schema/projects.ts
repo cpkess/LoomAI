@@ -31,6 +31,10 @@ export const projects = pgTable(
     managerAgentId: uuid("manager_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
     summary: text("summary"),
+    // Living-project fields: the current recommended next steps (kept fresh by
+    // the analysis engine) and when the knowledge was last re-evaluated.
+    nextSteps: text("next_steps"),
+    lastAnalyzedAt: timestamp("last_analyzed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -12,6 +12,9 @@ export const collections = pgTable("collections", {
     .references(() => organizations.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   description: text("description"),
+  // When set, this collection holds a single project's ingested sources (its
+  // scoped RAG space). Plain uuid (app-layer FK) to avoid a schema import cycle.
+  projectId: uuid("project_id"),
   // Model used to embed this collection's chunks; all documents in a
   // collection share one embedding space.
   embeddingModelId: uuid("embedding_model_id"),
