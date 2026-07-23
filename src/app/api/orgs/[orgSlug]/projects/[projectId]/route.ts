@@ -20,6 +20,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
         title: project.title,
         description: project.description,
         status: project.status,
+        charter: project.charter ?? null,
         nextSteps: project.nextSteps,
         lastAnalyzedAt: project.lastAnalyzedAt,
         createdAt: project.createdAt,

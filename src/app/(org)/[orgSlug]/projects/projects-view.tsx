@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { ProjectChat } from "./project-chat";
+import { ProjectScoping, PlanPanel, type Charter } from "./project-scoping";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -16,6 +17,7 @@ import {
   Plus,
   RefreshCw,
   Sparkles,
+  Target,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -44,6 +46,7 @@ interface ProjectListItem {
   id: string;
   title: string;
   description: string | null;
+  status: string;
   nextSteps: string | null;
   itemCount: number;
   openQuestions: number;
@@ -110,7 +113,10 @@ export function ProjectsView({ orgSlug }: { orgSlug: string }) {
                 <div className="flex items-start gap-3">
                   <FolderKanban className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
-                    <CardTitle className="truncate">{p.title}</CardTitle>
+                    <CardTitle className="flex items-center gap-2 truncate">
+                      {p.title}
+                      {p.status === "planning" && <Badge variant="warning">scoping</Badge>}
+                    </CardTitle>
                     {p.description && <CardDescription className="truncate">{p.description}</CardDescription>}
                     <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
                       <Badge variant="secondary">{p.itemCount} knowledge</Badge>
@@ -148,6 +154,7 @@ interface Project {
   title: string;
   description: string | null;
   status: string;
+  charter: Charter | null;
   nextSteps: string | null;
   lastAnalyzedAt: string | null;
 }
@@ -176,6 +183,18 @@ function ProjectDetail({ orgSlug, projectId, onBack }: { orgSlug: string; projec
         {project?.description && <p className="text-sm text-muted-foreground">{project.description}</p>}
       </div>
 
+      {project?.status === "planning" ? (
+        <ProjectScoping orgSlug={orgSlug} projectId={projectId} onFinalized={() => void load()} />
+      ) : (
+        <ProjectTabs orgSlug={orgSlug} projectId={projectId} />
+      )}
+    </>
+  );
+}
+
+function ProjectTabs({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
+  return (
+    <>
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -259,6 +278,8 @@ function OverviewTab({ orgSlug, projectId }: { orgSlug: string; projectId: strin
         </Button>
       </div>
 
+      <WorkPlanCard orgSlug={orgSlug} projectId={projectId} />
+
       {briefing.nextSteps && (
         <Card>
           <CardHeader>
@@ -319,6 +340,75 @@ function OverviewTab({ orgSlug, projectId }: { orgSlug: string; projectId: strin
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function WorkPlanCard({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
+  const [charter, setCharter] = useState<Charter | null | undefined>(undefined);
+  const [generating, setGenerating] = useState<number | null>(null);
+  const [reopening, setReopening] = useState(false);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}`);
+    if (res.ok) setCharter((await res.json()).project.charter ?? null);
+  }, [orgSlug, projectId]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function generate(index: number, d: { title: string; kind: string; brief: string }) {
+    setGenerating(index);
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/deliverables`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: d.title, kind: d.kind, brief: d.brief || undefined }),
+    });
+    setGenerating(null);
+    if (res.ok) toast.success(`Producing "${d.title}" — see Deliverables`);
+    else toast.error("Could not start that deliverable");
+  }
+
+  async function reopen() {
+    setReopening(true);
+    await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/scoping/reopen`, { method: "POST" });
+    setReopening(false);
+    window.location.reload();
+  }
+
+  if (!charter || !charter.objective) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Target className="size-4 text-primary" />
+            Work plan
+          </CardTitle>
+          <Button variant="ghost" size="sm" onClick={reopen} disabled={reopening}>
+            {reopening ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            Re-scope
+          </Button>
+        </div>
+        <CardDescription>The objective and scope this project is working toward.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <PlanPanel charter={charter} hideDeliverables />
+        {charter.deliverables?.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <div className="text-xs font-medium text-muted-foreground">Generate a planned deliverable</div>
+            <div className="flex flex-wrap gap-2">
+              {charter.deliverables.map((d, i) => (
+                <Button key={i} variant="outline" size="sm" onClick={() => generate(i, d)} disabled={generating !== null}>
+                  {generating === i ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                  {d.title}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -826,20 +916,19 @@ function CreateProjectDialog({ orgSlug, onClose }: { orgSlug: string; onClose: (
   const [description, setDescription] = useState("");
   const [pending, setPending] = useState(false);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function create(scope: boolean) {
     setPending(true);
     const res = await fetch(`/api/orgs/${orgSlug}/projects`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, description: description || undefined }),
+      body: JSON.stringify({ title, description: description || undefined, scope }),
     });
     setPending(false);
     if (!res.ok) {
       toast.error("Could not create project");
       return;
     }
-    toast.success("Project created — it's now a living workstream");
+    toast.success(scope ? "Let's scope it — building your work plan" : "Project created");
     onClose(true);
   }
 
@@ -848,20 +937,31 @@ function CreateProjectDialog({ orgSlug, onClose }: { orgSlug: string; onClose: (
       <DialogContent>
         <DialogHeader>
           <DialogTitle>New project</DialogTitle>
-          <DialogDescription>A living workstream. Describe the problem space; add sources as you go.</DialogDescription>
+          <DialogDescription>
+            Describe what you want to accomplish. A strategist will draft a work plan you can refine before the project goes live.
+          </DialogDescription>
         </DialogHeader>
-        <form onSubmit={submit} className="flex flex-col gap-4">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void create(true);
+          }}
+          className="flex flex-col gap-4"
+        >
           <div className="flex flex-col gap-2">
             <Label htmlFor="p-title">Title</Label>
             <Input id="p-title" value={title} onChange={(e) => setTitle(e.target.value)} required autoFocus placeholder="EU market expansion" />
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="p-desc">What is this about? (becomes the first source)</Label>
-            <Textarea id="p-desc" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} placeholder="Goals, context, what you already know…" />
+            <Label htmlFor="p-desc">What do you want to accomplish?</Label>
+            <Textarea id="p-desc" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} placeholder="Goals, context, audience, the output you need…" />
           </div>
-          <DialogFooter>
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="ghost" disabled={pending || !title.trim()} onClick={() => void create(false)}>
+              Skip — quick create
+            </Button>
             <Button type="submit" disabled={pending || !title.trim()}>
-              {pending ? "Creating…" : "Create project"}
+              {pending ? "Creating…" : "Scope & create"}
             </Button>
           </DialogFooter>
         </form>

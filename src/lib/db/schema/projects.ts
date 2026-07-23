@@ -1,4 +1,4 @@
-import { index, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, jsonb, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 import { users } from "./auth";
 import { organizations } from "./orgs";
@@ -27,6 +27,11 @@ export const projects = pgTable(
     status: projectStatus("status").notNull().default("planning"),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
     summary: text("summary"),
+    // The structured work plan produced by the scoping loop (objective, scope,
+    // key questions, assumptions, risks, approach, planned deliverables). While
+    // status is "planning" the project is being scoped; finalizing it seeds the
+    // knowledge graph and moves the project to "in_progress".
+    charter: jsonb("charter"),
     // Living-project fields: the current recommended next steps (kept fresh by
     // the analysis engine) and when the knowledge was last re-evaluated.
     nextSteps: text("next_steps"),

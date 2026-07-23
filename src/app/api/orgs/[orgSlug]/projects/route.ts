@@ -9,6 +9,8 @@ import { deliverables, projectKnowledgeItems, projectSources, projects } from "@
 const createSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(8000).optional(),
+  // Default true: open into the scoping loop. false = quick-create (live now).
+  scope: z.boolean().optional(),
 });
 
 // Create a living project — an evolving workstream, not a milestone plan.
@@ -24,8 +26,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
       title: parsed.data.title,
       description: parsed.data.description ?? null,
       createdByUserId: ctx.user.id,
+      scope: parsed.data.scope,
     });
-    return Response.json({ project: { id: project.id } }, { status: 201 });
+    return Response.json({ project: { id: project.id, status: project.status } }, { status: 201 });
   } catch (err) {
     return errorResponse(err);
   }

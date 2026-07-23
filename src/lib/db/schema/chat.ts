@@ -14,6 +14,9 @@ export const conversations = pgTable(
     workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "cascade" }),
     // Project this conversation belongs to (app-layer FK to avoid a cycle).
     projectId: uuid("project_id"),
+    // "chat" = the project assistant; "scoping" = the scoping-loop conversation
+    // that establishes the project's work plan.
+    kind: text("kind").notNull().default("chat"),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),

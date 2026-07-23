@@ -12,6 +12,7 @@ LoomAI is built around one question: *does this help you build better knowledge 
 - *(Scaffolded next: audio/meeting-recording transcription, image OCR, full git-repo import — the parser pipeline is pluggable.)*
 
 ### 2. Living project intelligence
+- **Scoping loop — one prompt bootstraps the whole project** — your initial prompt launches a **scoping session**: a strategist subagent instantly drafts a structured **work plan** (objective, success criteria, scope in/out, audience, key questions, assumptions, risks, approach, planned deliverables, evidence to gather) and refines it with you in a short conversation. Accepting the plan **seeds the knowledge graph** — the objective becomes a decision, and the open questions, assumptions, and risks become live items — so the project's intelligence (gaps, suggested investigations) is populated before you add a single document, and the planned deliverables are one-click to generate. Skippable via *quick create*, and re-openable any time (*Re-scope*).
 - **An evolving understanding, not a folder** — each source is automatically analyzed: an extraction subagent pulls typed **knowledge items** — facts, claims, insights, assumptions, decisions, questions, risks — embeds them, and **reconciles** them against what's already known. Matching evidence *reinforces* an item (bumping confidence, refreshing its timestamp); conflicting evidence creates a **`contradicts`** edge and marks the weaker item **challenged**; a source that answers a **question** resolves it.
 - **Provenance & history** — every item carries the exact evidence snippets it came from, the typed relationships (`supports` / `contradicts` / `answers` / `refines` / `supersedes` / `raises`) that connect it, and a full timeline of how it evolved. Every decision is traceable.
 - **Time-aware** — items go **stale** past a per-type interval (risks 30 days, assumptions 60, facts 180 — all env-tunable) and are flagged on open. Analysis is **event-driven and on-open** — no scheduler.
@@ -79,7 +80,7 @@ The Docker image ships as a self-updating checkout, so you don't have to manuall
 ```
 src/lib/ai         provider plugins (lmstudio, ollama, anthropic, openai-compatible) + registry
 src/lib/agents     ephemeral subagents (systemReply grounded generation), specialist role personas, the work queue
-src/lib/projects   Living Projects (knowledge graph, event-driven analysis, staleness, intelligence, briefing, chat) + multi-stage deliverable engine + quality gates + deliverable kinds
+src/lib/projects   Living Projects (scoping loop + work plan, knowledge graph, event-driven analysis, staleness, intelligence, briefing, chat) + multi-stage deliverable engine + quality gates + deliverable kinds
 src/lib/research   free web tools (DuckDuckGo search, fetch+links, headless-browser navigation)
 src/lib/rag        parse (pdf/docx/pptx/xlsx/zip/images/transcripts) → chunk → embed → pgvector retrieve, in-process ingestion queue
 src/lib/export     render deliverables → PDF/DOCX/HTML/Markdown, native PPTX (pptxgenjs) + XLSX (exceljs)
