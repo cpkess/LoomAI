@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { charterSchema, charterToSeedItems, normalizeKind, parseCharter } from "./scoping";
+import { charterSchema, charterToSeedItems, normalizeKind, parseCharter, scopeBlock } from "./scoping";
 
 const full = {
   objective: "Enter the EU market",
@@ -40,6 +40,23 @@ describe("normalizeKind", () => {
     expect(normalizeKind("presentation")).toBe("presentation");
     expect(normalizeKind("workbook")).toBe("workbook");
     expect(normalizeKind("banana")).toBe("report");
+  });
+});
+
+describe("scopeBlock", () => {
+  it("composes objective, audience, scope, criteria, and questions", () => {
+    const b = scopeBlock(charterSchema.parse(full), "raw brief");
+    expect(b).toContain("Objective: Enter the EU market");
+    expect(b).toContain("Audience: Exec team");
+    expect(b).toContain("In scope: Germany");
+    expect(b).toContain("Out of scope (do not cover): US");
+    expect(b).toContain("Key questions to address: Which country first?; What is the regulatory bar?");
+  });
+  it("falls back to the raw brief when there's no charter", () => {
+    expect(scopeBlock(null, "Just do the thing")).toContain("Objective: Just do the thing");
+  });
+  it("is empty when there's nothing to say", () => {
+    expect(scopeBlock(null, null)).toBe("");
   });
 });
 

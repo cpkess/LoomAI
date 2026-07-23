@@ -67,6 +67,24 @@ export function normalizeKind(kind: string): DeliverableKind {
 }
 
 /**
+ * Pure: the project's objective + scope as a grounding block, so anything the
+ * project produces (deliverables, analysis) stays on-target and in-scope. Falls
+ * back to the raw brief when there's no charter yet.
+ */
+export function scopeBlock(charter: Charter | null, description: string | null): string {
+  const lines: string[] = [];
+  const objective = charter?.objective?.trim() || description?.trim();
+  if (objective) lines.push(`Objective: ${objective}`);
+  if (charter?.audience?.trim()) lines.push(`Audience: ${charter.audience.trim()}`);
+  if (charter?.scope?.inScope?.length) lines.push(`In scope: ${charter.scope.inScope.join("; ")}`);
+  if (charter?.scope?.outOfScope?.length) lines.push(`Out of scope (do not cover): ${charter.scope.outOfScope.join("; ")}`);
+  if (charter?.successCriteria?.length) lines.push(`Success criteria: ${charter.successCriteria.join("; ")}`);
+  if (charter?.keyQuestions?.length) lines.push(`Key questions to address: ${charter.keyQuestions.join("; ")}`);
+  if (lines.length === 0) return "";
+  return `Project objective and scope (stay strictly within this):\n${lines.join("\n")}`;
+}
+
+/**
  * Pure: the knowledge items a finalized charter seeds. The objective anchors the
  * project as a decision; open questions, assumptions, and risks become live
  * items so the project's intelligence (gaps, investigations) is populated from

@@ -23,6 +23,7 @@ import { slideFromMarkdown, type DeckSpec } from "@/lib/export/pptx";
 import { sheetFromMarkdown, type WorkbookSpec } from "@/lib/export/xlsx";
 import { structuredKind } from "./deliverableKinds";
 import { recordProjectEvent, retrieveProjectContext } from "./knowledge";
+import { parseCharter, scopeBlock } from "./scoping";
 import { addSource } from "./sources";
 import { evaluateQualityGates, resolveQualityConfig, type SectionIssue } from "./quality";
 
@@ -96,20 +97,25 @@ export async function advanceDeliverable(deliverableId: string): Promise<void> {
   const org = await db.query.organizations.findFirst({ where: eq(organizations.id, d.organizationId) });
   if (!org) return;
 
+  // The project's objective + scope (from its charter) grounds every step, so a
+  // deliverable is generated from the prompt and scope even before sources pile
+  // up, and stays on-target and in-scope.
+  const scope = scopeBlock(parseCharter(project.charter), project.description);
+
   let terminal = false;
 
   if (d.status === "planning") {
-    await planOutline(d, project, org);
+    await planOutline(d, project, org, scope);
   } else if (d.status === "producing" || d.status === "revising") {
-    terminal = await produceStep(d, project, org);
+    terminal = await produceStep(d, project, org, scope);
   } else if (d.status === "reviewing") {
-    terminal = await reviewStep(d, project, org);
+    terminal = await reviewStep(d, project, org, scope);
   }
 
   if (!terminal) enqueueDeliverable(deliverableId);
 }
 
-async function planOutline(d: Deliverable, project: { id: string; title: string; description: string | null; organizationId: string }, org: Organization): Promise<void> {
+async function planOutline(d: Deliverable, project: { id: string; title: string; description: string | null; organizationId: string }, org: Organization, scope: string): Promise<void> {
   const context = await retrieveProjectContext(project, `${d.title}\n${d.brief ?? ""}`);
   const text = await runRole(
     org,
@@ -117,9 +123,10 @@ async function planOutline(d: Deliverable, project: { id: string; title: string;
     [
       `Plan the outline for a ${d.kind} titled "${d.title}".`,
       d.brief ? `Brief: ${d.brief}` : "",
+      scope ? `\n${scope}\n` : "",
       outlineGuidance(d.kind),
       context ? `\nProject knowledge to build on:\n${context}\n` : "",
-      `Produce up to ${Math.min(12, limits.maxStageTasks + 4)} sections, each with a one-line brief of what it must cover. No overlap; complete coverage of the goal.`,
+      `Produce up to ${Math.min(12, limits.maxStageTasks + 4)} sections, each with a one-line brief of what it must cover. No overlap; complete coverage of the objective; nothing out of scope.`,
       'Respond with JSON only: {"sections":[{"heading":"...","brief":"..."}]}',
     ]
       .filter(Boolean)
@@ -138,7 +145,7 @@ async function planOutline(d: Deliverable, project: { id: string; title: string;
 }
 
 /** Draft/redraft the next unwritten section; when all are drafted, move to review. */
-async function produceStep(d: Deliverable, project: { id: string; organizationId: string; title: string; description: string | null }, org: Organization): Promise<boolean> {
+async function produceStep(d: Deliverable, project: { id: string; organizationId: string; title: string; description: string | null }, org: Organization, scope: string): Promise<boolean> {
   const sections = await db.query.deliverableSections.findMany({
     where: eq(deliverableSections.deliverableId, d.id),
     orderBy: asc(deliverableSections.orderIndex),
@@ -161,6 +168,7 @@ async function produceStep(d: Deliverable, project: { id: string; organizationId
     [
       `${isRevision ? "Revise" : "Write"} the section "${next.heading}" of the ${d.kind} "${d.title}".`,
       next.brief ? `This section must cover: ${next.brief}` : "",
+      scope ? `\n${scope}\nWrite for the stated audience and stay strictly within scope.\n` : "",
       `Other sections (for coherence, don't duplicate them):\n${others || "(none)"}`,
       context ? `\nEvidence from the project's knowledge:\n${context}\n` : "",
       isRevision && issues.length ? `Address these issues from review:\n${issues.map((i) => `- (${i.severity}) ${i.kind}: ${i.detail}`).join("\n")}` : "",
@@ -180,7 +188,7 @@ async function produceStep(d: Deliverable, project: { id: string; organizationId
 }
 
 /** Critique the next un-reviewed section; when all reviewed, run the quality gate. */
-async function reviewStep(d: Deliverable, project: { id: string; title: string }, org: Organization): Promise<boolean> {
+async function reviewStep(d: Deliverable, project: { id: string; title: string }, org: Organization, scope: string): Promise<boolean> {
   const sections = await db.query.deliverableSections.findMany({
     where: eq(deliverableSections.deliverableId, d.id),
     orderBy: asc(deliverableSections.orderIndex),
@@ -192,7 +200,8 @@ async function reviewStep(d: Deliverable, project: { id: string; title: string }
       org,
       "critic",
       [
-        `Critically review this section of the ${d.kind} "${d.title}" for logical consistency, unsupported claims, weak arguments, inconsistent terminology, weak transitions, and deviation from the goal.`,
+        `Critically review this section of the ${d.kind} "${d.title}" for logical consistency, unsupported claims, weak arguments, inconsistent terminology, weak transitions, deviation from the objective, and anything out of scope or off-audience.`,
+        scope ? `\n${scope}\n` : "",
         `Section "${next.heading}" — should cover: ${next.brief ?? ""}`,
         `Other sections: ${others || "(none)"}`,
         "",

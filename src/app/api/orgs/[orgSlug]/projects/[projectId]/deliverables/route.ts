@@ -6,6 +6,7 @@ import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
 import { deliverables, projects } from "@/lib/db/schema";
 import { DELIVERABLE_KINDS } from "@/lib/projects/deliverableKinds";
+import { parseCharter } from "@/lib/projects/scoping";
 
 const schema = z.object({
   title: z.string().min(1).max(200),
@@ -46,9 +47,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
   try {
     const { orgSlug, projectId } = await params;
     const ctx = await requireOrg(orgSlug, "member");
-    if (!(await ownedProject(ctx.org.id, projectId))) return Response.json({ error: "Project not found" }, { status: 404 });
+    const project = await ownedProject(ctx.org.id, projectId);
+    if (!project) return Response.json({ error: "Project not found" }, { status: 404 });
     const parsed = schema.safeParse(await req.json());
     if (!parsed.success) return Response.json({ error: "Invalid input" }, { status: 400 });
+
+    // With no brief, fall back to the project's objective so the deliverable is
+    // still generated from the prompt + scope. The engine injects the full scope.
+    const charter = parseCharter(project.charter);
+    const brief = parsed.data.brief?.trim() || charter?.objective?.trim() || project.description?.trim() || null;
 
     const [d] = await db
       .insert(deliverables)
@@ -57,7 +64,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
         organizationId: ctx.org.id,
         title: parsed.data.title,
         kind: parsed.data.kind,
-        brief: parsed.data.brief ?? null,
+        brief,
         qualityConfig: parsed.data.qualityConfig ?? {},
         createdByUserId: ctx.user.id,
       })
