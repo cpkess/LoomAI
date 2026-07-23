@@ -1,10 +1,18 @@
 # LoomAI
 
-**An open, local-first intelligent operating system for knowledge work — run it on your own models and infrastructure.**
+**Paste a brief. Get the whole package. Nothing leaves your machine.**
 
-LoomAI is built around one question: *does this help you build better knowledge or create better work?* You create **projects** that continuously ingest information and build a structured, evolving understanding, then produce professional deliverables through orchestrated multi-stage AI workflows. There is no AI org chart to manage — projects spin up **ephemeral subagents** (a persona for one task, gone when done), so everything works with zero setup. LM Studio is a first-class inference engine; any OpenAI-style API works too.
+LoomAI turns a rough brief into a complete, consistent, decision-ready output package — a report, a slide deck, a spreadsheet model, and a one-pager — produced entirely on **your own local model, offline.** The superpower is the **Solution engine**: it diagnoses the *real* problem behind your brief, produces **one** structured answer, verifies that the answer actually solves the problem, and renders that single source into every format — so the deck, the memo, and the model can never disagree. It makes a model you can run on a laptop punch like a small team, without a byte of confidential data touching the cloud.
 
-## Three pillars
+### The one flow: brief → problem → solution → package
+1. **Diagnose** — a strategist subagent finds the core problem to solve (often not the literal ask), the decision to make, and what "solved" looks like.
+2. **Solve** — one structured **Solution** is produced: executive summary, a single clear recommendation, the findings and analysis behind it, risks with mitigations, a concrete plan, and the numbers.
+3. **Verify** — a reviewer checks the answer against the diagnosed problem and its success criteria, and revises until it passes (or hits the iteration cap).
+4. **Render** — that one Solution downloads as a **Report** (PDF/Word/HTML/Markdown), a **Deck** (`.pptx`), a **Model** (`.xlsx`), and a **One-pager** — all guaranteed consistent because they come from the same source. Change the brief, re-solve, and every format updates in lockstep.
+
+Everything below is how the project builds the context and evidence the Solution stands on. There is no AI org chart — projects spin up **ephemeral subagents** (a persona for one task, gone when done), so it all works with zero setup. LM Studio is a first-class inference engine; any OpenAI-style API works too.
+
+## Three pillars (the machinery behind the Solution)
 
 ### 1. World-class context collection
 - **Ingest almost anything** — PDFs, Word (`.docx`), **PowerPoint (`.pptx`)**, **Excel (`.xlsx`)**, Markdown, HTML, text/CSV/JSON, **images**, **transcripts (`.vtt`/`.srt`)**, **ZIP archives**, and **web pages by URL**. Parsers preserve structure and provenance — slides become `## Slide N` with speaker notes, workbooks become per-sheet tables, archives expand and ingest each supported entry — and record metadata (source kind, slide/sheet counts, filename) on every document.
@@ -81,7 +89,7 @@ The Docker image ships as a self-updating checkout, so you don't have to manuall
 ```
 src/lib/ai         provider plugins (lmstudio, ollama, anthropic, openai-compatible) + registry
 src/lib/agents     ephemeral subagents (systemReply grounded generation), specialist role personas, the work queue
-src/lib/projects   Living Projects (scoping loop + work plan, knowledge graph, event-driven analysis, staleness, intelligence, briefing, chat) + multi-stage deliverable engine + quality gates + deliverable kinds
+src/lib/projects   Solution engine (diagnose → solve → verify) + one-source multi-format renderers; Living Projects (scoping loop + work plan, knowledge graph, event-driven analysis, staleness, intelligence, briefing, chat) + multi-stage deliverable engine + quality gates
 src/lib/research   free web tools (DuckDuckGo search, fetch+links, headless-browser navigation)
 src/lib/rag        parse (pdf/docx/pptx/xlsx/zip/images/transcripts) → chunk → embed → pgvector retrieve, in-process ingestion queue
 src/lib/export     render deliverables → PDF/DOCX/HTML/Markdown, native PPTX (pptxgenjs) + XLSX (exceljs)

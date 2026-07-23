@@ -9,7 +9,7 @@
 
 interface QueueEntry {
   id: string;
-  mode: "analyze" | "deliverable";
+  mode: "analyze" | "deliverable" | "solution";
 }
 
 const queue: QueueEntry[] = [];
@@ -24,6 +24,12 @@ export function enqueueSourceAnalysis(sourceId: string): void {
 /** Advance a multi-stage deliverable by one production step. */
 export function enqueueDeliverable(deliverableId: string): void {
   queue.push({ id: deliverableId, mode: "deliverable" });
+  if (!running) void drain();
+}
+
+/** Advance a Solution (diagnose → solve → verify) by one step. */
+export function enqueueSolution(solutionId: string): void {
+  queue.push({ id: solutionId, mode: "solution" });
   if (!running) void drain();
 }
 
@@ -44,6 +50,9 @@ async function drain(): Promise<void> {
         if (entry.mode === "analyze") {
           const { analyzeSource } = await import("@/lib/projects/analysis");
           await analyzeSource(entry.id);
+        } else if (entry.mode === "solution") {
+          const { advanceSolution } = await import("@/lib/projects/solution");
+          await advanceSolution(entry.id);
         } else {
           const { advanceDeliverable } = await import("@/lib/projects/deliverables");
           await advanceDeliverable(entry.id);
@@ -53,6 +62,9 @@ async function drain(): Promise<void> {
         if (entry.mode === "analyze") {
           const { markSourceError } = await import("@/lib/projects/analysis");
           await markSourceError(entry.id, err instanceof Error ? err.message : String(err)).catch(() => {});
+        } else if (entry.mode === "solution") {
+          const { markSolutionFailed } = await import("@/lib/projects/solution");
+          await markSolutionFailed(entry.id, err instanceof Error ? err.message : String(err)).catch(() => {});
         } else {
           const { markDeliverableFailed } = await import("@/lib/projects/deliverables");
           await markDeliverableFailed(entry.id, err instanceof Error ? err.message : String(err)).catch(() => {});
@@ -72,6 +84,8 @@ async function drain(): Promise<void> {
 export async function resumePendingWork(): Promise<void> {
   const { pendingSourceIds } = await import("@/lib/projects/analysis");
   const { activeDeliverableIds } = await import("@/lib/projects/deliverables");
+  const { activeSolutionIds } = await import("@/lib/projects/solution");
   for (const id of await pendingSourceIds()) enqueueSourceAnalysis(id);
   for (const id of await activeDeliverableIds()) enqueueDeliverable(id);
+  for (const id of await activeSolutionIds()) enqueueSolution(id);
 }

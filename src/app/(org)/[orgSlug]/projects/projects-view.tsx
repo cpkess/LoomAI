@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { ProjectChat } from "./project-chat";
 import { ProjectScoping, PlanPanel, type Charter } from "./project-scoping";
+import { ProjectSolution } from "./project-solution";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -195,14 +196,18 @@ function ProjectDetail({ orgSlug, projectId, onBack }: { orgSlug: string; projec
 function ProjectTabs({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
   return (
     <>
-      <Tabs defaultValue="overview">
+      <Tabs defaultValue="solution">
         <TabsList>
+          <TabsTrigger value="solution">Solution</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="sources">Sources</TabsTrigger>
           <TabsTrigger value="knowledge">Knowledge</TabsTrigger>
           <TabsTrigger value="deliverables">Deliverables</TabsTrigger>
           <TabsTrigger value="chat">Chat</TabsTrigger>
         </TabsList>
+        <TabsContent value="solution" className="pt-3">
+          <ProjectSolution orgSlug={orgSlug} projectId={projectId} />
+        </TabsContent>
         <TabsContent value="overview" className="pt-3">
           <OverviewTab orgSlug={orgSlug} projectId={projectId} />
         </TabsContent>

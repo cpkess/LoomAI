@@ -8,3 +8,4 @@ export * from "./tools";
 export * from "./projects";
 export * from "./projectKnowledge";
 export * from "./deliverables";
+export * from "./solutions";
