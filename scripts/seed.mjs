@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Idempotent seed: creates the platform admin and a demo organization with a
-// couple of reusable prompts. Projects, knowledge, and deliverables are created
-// by the user — there are no persistent AI employees. Plain JS (no build step)
-// so it runs both in development (npm run db:seed) and inside the Docker image.
+// Idempotent seed: creates the platform admin and a demo organization. Projects,
+// knowledge, and deliverables are created by the user — there are no persistent
+// AI employees. Plain JS (no build step) so it runs both in development
+// (npm run db:seed) and inside the Docker image.
 import bcrypt from "bcryptjs";
 import postgres from "postgres";
 
@@ -35,15 +35,6 @@ try {
   await sql`
     INSERT INTO organization_members (organization_id, user_id, role, title)
     VALUES (${org.id}, ${admin.id}, 'org_admin', 'Owner')`;
-
-  await sql`
-    INSERT INTO prompts (organization_id, name, category, description, content, variables, created_by_user_id)
-    VALUES (
-      ${org.id}, 'Research Assistant', 'General',
-      'Thorough research assistant prompt',
-      'You are a meticulous research assistant. Summarize sources faithfully, cite where claims come from, and clearly separate facts from interpretation.',
-      ${sql.json([])}, ${admin.id}
-    )`;
 
   console.log("Seeded:");
   console.log(`  platform admin: admin@loomai.local / ${adminPassword}`);

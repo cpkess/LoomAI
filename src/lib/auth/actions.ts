@@ -88,7 +88,7 @@ export async function registerAction(_prev: AuthFormState, formData: FormData): 
   });
 
   try {
-    await signIn("credentials", { email, password, redirectTo: `/${org.slug}/dashboard` });
+    await signIn("credentials", { email, password, redirectTo: `/${org.slug}/projects` });
   } catch (err) {
     if (err instanceof AuthError) redirect("/login");
     throw err;

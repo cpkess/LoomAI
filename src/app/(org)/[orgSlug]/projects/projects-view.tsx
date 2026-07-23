@@ -60,6 +60,7 @@ interface ProjectListItem {
 
 export function ProjectsView({ orgSlug }: { orgSlug: string }) {
   const [projects, setProjects] = useState<ProjectListItem[] | null>(null);
+  const [prompt, setPrompt] = useState("");
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -72,25 +73,61 @@ export function ProjectsView({ orgSlug }: { orgSlug: string }) {
     void load();
   }, [load]);
 
+  async function create() {
+    const body = prompt.trim();
+    if (!body) return;
+    setCreating(true);
+    const res = await fetch(`/api/orgs/${orgSlug}/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: body }),
+    });
+    setCreating(false);
+    if (!res.ok) {
+      toast.error("Could not create project");
+      return;
+    }
+    const { project } = await res.json();
+    setPrompt("");
+    await load();
+    setOpenId(project.id);
+  }
+
   if (openId) {
     return <ProjectDetail orgSlug={orgSlug} projectId={openId} onBack={() => { setOpenId(null); void load(); }} />;
   }
 
   return (
     <>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold">Projects</h1>
-          <p className="text-sm text-muted-foreground">
-            Living workstreams. Add sources and each project builds an evolving understanding — knowledge, contradictions,
-            open questions, risks — and produces deliverables through a multi-stage AI workflow.
-          </p>
-        </div>
-        <Button onClick={() => setCreating(true)}>
-          <Plus />
-          New project
-        </Button>
+      <div className="flex flex-col gap-1">
+        <h1 className="text-xl font-semibold">Projects</h1>
+        <p className="text-sm text-muted-foreground">
+          Describe what you want to solve. Each project is a living workspace — add sources, build knowledge, and
+          produce a verified solution and deliverables.
+        </p>
       </div>
+
+      <Card>
+        <CardContent className="flex flex-col gap-3 py-4">
+          <Textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={4}
+            autoFocus
+            placeholder="Describe what you want to solve — a decision, a question, a piece of work…"
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void create();
+            }}
+          />
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">⌘/Ctrl + Enter to create</span>
+            <Button onClick={() => void create()} disabled={creating || !prompt.trim()}>
+              {creating ? <Loader2 className="animate-spin" /> : <Sparkles />}
+              Create project
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {projects === null ? (
         <Card>
@@ -103,7 +140,7 @@ export function ProjectsView({ orgSlug }: { orgSlug: string }) {
         <Card>
           <CardContent className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
             <FolderKanban className="size-8" />
-            No projects yet. Start one and add what you know — it becomes a living workstream.
+            No projects yet. Describe something above to start your first one.
           </CardContent>
         </Card>
       ) : (
@@ -133,16 +170,6 @@ export function ProjectsView({ orgSlug }: { orgSlug: string }) {
             </Card>
           ))}
         </div>
-      )}
-
-      {creating && (
-        <CreateProjectDialog
-          orgSlug={orgSlug}
-          onClose={(saved) => {
-            setCreating(false);
-            if (saved) void load();
-          }}
-        />
       )}
     </>
   );
@@ -933,65 +960,6 @@ function Loading() {
       <Loader2 className="size-4 animate-spin" />
       Loading…
     </div>
-  );
-}
-
-function CreateProjectDialog({ orgSlug, onClose }: { orgSlug: string; onClose: (saved: boolean) => void }) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [pending, setPending] = useState(false);
-
-  async function create(scope: boolean) {
-    setPending(true);
-    const res = await fetch(`/api/orgs/${orgSlug}/projects`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, description: description || undefined, scope }),
-    });
-    setPending(false);
-    if (!res.ok) {
-      toast.error("Could not create project");
-      return;
-    }
-    toast.success(scope ? "Let's scope it — building your work plan" : "Project created");
-    onClose(true);
-  }
-
-  return (
-    <Dialog open onOpenChange={(o) => !o && onClose(false)}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>New project</DialogTitle>
-          <DialogDescription>
-            Describe what you want to accomplish. A strategist will draft a work plan you can refine before the project goes live.
-          </DialogDescription>
-        </DialogHeader>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void create(true);
-          }}
-          className="flex flex-col gap-4"
-        >
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="p-title">Title</Label>
-            <Input id="p-title" value={title} onChange={(e) => setTitle(e.target.value)} required autoFocus placeholder="EU market expansion" />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="p-desc">What do you want to accomplish?</Label>
-            <Textarea id="p-desc" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} placeholder="Goals, context, audience, the output you need…" />
-          </div>
-          <DialogFooter className="gap-2">
-            <Button type="button" variant="ghost" disabled={pending || !title.trim()} onClick={() => void create(false)}>
-              Skip — quick create
-            </Button>
-            <Button type="submit" disabled={pending || !title.trim()}>
-              {pending ? "Creating…" : "Scope & create"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }
 

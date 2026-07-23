@@ -16,7 +16,7 @@ export default async function Home() {
     const org = await db.query.organizations.findFirst({
       where: eq(organizations.id, membership.organizationId),
     });
-    if (org) redirect(`/${org.slug}/dashboard`);
+    if (org) redirect(`/${org.slug}/projects`);
   }
 
   if (user.isPlatformAdmin) redirect("/admin");

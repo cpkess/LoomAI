@@ -37,7 +37,7 @@ export function OrganizationsView({ organizations }: { organizations: OrgRow[] }
         <div>
           <h1 className="text-xl font-semibold">Organizations</h1>
           <p className="text-sm text-muted-foreground">
-            Tenants on this deployment. Each is fully isolated: its own members, projects, knowledge, and prompts.
+            Tenants on this deployment. Each is fully isolated: its own members, projects, and knowledge.
           </p>
         </div>
         <Button onClick={() => setCreating(true)}>
@@ -66,7 +66,7 @@ export function OrganizationsView({ organizations }: { organizations: OrgRow[] }
               <TableCell>{org.projects}</TableCell>
               <TableCell className="text-right">
                 <Button asChild variant="ghost" size="sm">
-                  <Link href={`/${org.slug}/dashboard`}>
+                  <Link href={`/${org.slug}/projects`}>
                     Open
                     <ArrowUpRight />
                   </Link>

@@ -6,27 +6,36 @@ import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
 import { deliverables, projectKnowledgeItems, projectSources, projects } from "@/lib/db/schema";
 
+// A project is just a prompt space: type what you want, and the project is
+// created from it. The title is derived from the prompt.
 const createSchema = z.object({
-  title: z.string().min(1).max(200),
-  description: z.string().max(8000).optional(),
-  // Default true: open into the scoping loop. false = quick-create (live now).
-  scope: z.boolean().optional(),
+  prompt: z.string().min(1).max(8000),
 });
 
-// Create a living project — an evolving workstream, not a milestone plan.
+/** Derive a short title from the opening of a prompt. */
+function titleFromPrompt(prompt: string): string {
+  const firstLine = prompt.trim().split("\n").find((l) => l.trim()) ?? prompt.trim();
+  const clean = firstLine.replace(/\s+/g, " ").trim();
+  if (clean.length <= 80) return clean;
+  const cut = clean.slice(0, 80);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trim()}…`;
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ orgSlug: string }> }) {
   try {
     const { orgSlug } = await params;
     const ctx = await requireOrg(orgSlug, "member");
     const parsed = createSchema.safeParse(await req.json());
-    if (!parsed.success) return Response.json({ error: "Invalid input" }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "Enter a prompt" }, { status: 400 });
 
+    const prompt = parsed.data.prompt.trim();
     const project = await createLivingProject({
       orgId: ctx.org.id,
-      title: parsed.data.title,
-      description: parsed.data.description ?? null,
+      title: titleFromPrompt(prompt),
+      description: prompt,
       createdByUserId: ctx.user.id,
-      scope: parsed.data.scope,
+      scope: false, // straight to a live project — the prompt is the brief
     });
     return Response.json({ project: { id: project.id, status: project.status } }, { status: 201 });
   } catch (err) {
