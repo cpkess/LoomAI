@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
 
 interface Problem {
   coreProblem: string;
@@ -30,17 +31,26 @@ interface Verification {
   gaps: string[];
   fixes: string[];
 }
+interface Evidence {
+  id: string;
+  snippet: string;
+  source: string;
+  kind: string;
+}
 interface SolutionState {
   id: string;
   status: string;
   iteration: number;
+  researchMode: boolean;
   problem: Problem | null;
   model: SolutionModel | null;
+  evidence: Evidence[];
   verification: Verification | null;
 }
 
 const STATUS_LABEL: Record<string, string> = {
   diagnosing: "Diagnosing the real problem…",
+  researching: "Researching & gathering evidence…",
   solving: "Producing the solution…",
   verifying: "Checking it solves the problem…",
   revising: "Closing gaps…",
@@ -50,6 +60,7 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
   const base = `/api/orgs/${orgSlug}/projects/${projectId}/solution`;
   const [sol, setSol] = useState<SolutionState | null | undefined>(undefined);
   const [starting, setStarting] = useState(false);
+  const [research, setResearch] = useState(true);
 
   const load = useCallback(async () => {
     const res = await fetch(base);
@@ -64,13 +75,17 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
 
   async function solve() {
     setStarting(true);
-    const res = await fetch(base, { method: "POST" });
+    const res = await fetch(base, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ research }),
+    });
     setStarting(false);
     if (!res.ok) {
       toast.error("Could not start");
       return;
     }
-    toast.success("Solving — diagnosing the core problem first");
+    toast.success(research ? "Solving — gathering evidence first" : "Solving — diagnosing the core problem first");
     void load();
   }
 
@@ -92,6 +107,10 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
               one-pager. All from one source, so they always agree.
             </p>
           </div>
+          <label className="flex items-center gap-2 text-sm">
+            <Switch checked={research} onCheckedChange={setResearch} />
+            <span>Research mode — gather &amp; cite evidence first</span>
+          </label>
           <Button onClick={solve} disabled={starting}>
             {starting ? <Loader2 className="animate-spin" /> : <Sparkles />}
             Generate solution
@@ -120,6 +139,10 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
         {sol.iteration > 0 && <Badge variant="outline">revision {sol.iteration}</Badge>}
         <div className="ml-auto flex items-center gap-2">
           {sol.model && <DownloadBar base={base} />}
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Switch checked={research} onCheckedChange={setResearch} />
+            Research
+          </label>
           <Button size="sm" variant="outline" onClick={solve} disabled={starting || Boolean(running)}>
             {starting ? <Loader2 className="animate-spin" /> : <Sparkles />}
             Re-solve
@@ -134,7 +157,34 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
       ) : running ? (
         <Loading label={STATUS_LABEL[sol.status]} />
       ) : null}
+
+      {sol.evidence.length > 0 && <EvidenceCard evidence={sol.evidence} />}
     </div>
+  );
+}
+
+function EvidenceCard({ evidence }: { evidence: Evidence[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <FileText className="size-4 text-muted-foreground" />
+          Evidence &amp; sources
+        </CardTitle>
+        <CardDescription>Every claim in the answer is cited to one of these — traceable back to your own data or the web.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2 text-sm">
+        {evidence.map((e) => (
+          <div key={e.id} className="flex gap-2">
+            <Badge variant="secondary" className="h-fit shrink-0">{e.id}</Badge>
+            <div className="min-w-0">
+              <span>{e.snippet}</span>
+              <span className="ml-1 text-xs text-muted-foreground">({e.source})</span>
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 

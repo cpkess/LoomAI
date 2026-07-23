@@ -3,7 +3,7 @@ import { FORMAT_META, renderDeliverable, type DeliverableFormat } from "@/lib/ex
 import { renderPptx } from "@/lib/export/pptx";
 import { renderXlsx } from "@/lib/export/xlsx";
 import { ownedProject } from "@/lib/projects/chat";
-import { latestSolution, problemSchema, solutionModelSchema } from "@/lib/projects/solution";
+import { evidenceSchema, latestSolution, problemSchema, solutionModelSchema } from "@/lib/projects/solution";
 import { solutionToDeck, solutionToMarkdown, solutionToOnePager, solutionToWorkbook } from "@/lib/projects/solutionRender";
 import { slugify } from "@/lib/utils";
 
@@ -25,24 +25,25 @@ export async function GET(req: Request, { params }: { params: Promise<{ orgSlug:
     if (!s || !s.model) return Response.json({ error: "No completed solution yet" }, { status: 409 });
     const problem = s.problem ? problemSchema.safeParse(s.problem).data ?? null : null;
     const model = solutionModelSchema.parse(s.model);
+    const evidence = s.evidence ? evidenceSchema.safeParse(s.evidence).data ?? [] : [];
 
     const url = new URL(req.url);
     const doc = url.searchParams.get("doc") ?? "report"; // report | onepager | deck | model
     const base = slugify(model.title || "solution") || "solution";
 
     if (doc === "deck") {
-      const bytes = await renderPptx(solutionToDeck(problem, model));
+      const bytes = await renderPptx(solutionToDeck(problem, model, evidence));
       return binary(bytes, `${base}.pptx`, NATIVE.pptx.mime);
     }
     if (doc === "model") {
-      const bytes = await renderXlsx(solutionToWorkbook(model));
+      const bytes = await renderXlsx(solutionToWorkbook(model, evidence));
       return binary(bytes, `${base}.xlsx`, NATIVE.xlsx.mime);
     }
 
     // Prose documents: report or one-pager, in md/html/pdf/docx.
     const format = (url.searchParams.get("format") ?? "md") as DeliverableFormat;
     if (!["md", "html", "pdf", "docx"].includes(format)) return Response.json({ error: "Unsupported format" }, { status: 400 });
-    const markdown = doc === "onepager" ? solutionToOnePager(problem, model) : solutionToMarkdown(problem, model);
+    const markdown = doc === "onepager" ? solutionToOnePager(problem, model) : solutionToMarkdown(problem, model, evidence);
     const bytes = await renderDeliverable(format, { title: model.title || "Solution", orgName: ctx.org.name, markdown });
     return binary(bytes, `${base}${doc === "onepager" ? "-onepager" : ""}.${FORMAT_META[format].ext}`, FORMAT_META[format].mime);
   } catch (err) {

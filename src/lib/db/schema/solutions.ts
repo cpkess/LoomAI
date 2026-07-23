@@ -1,4 +1,4 @@
-import { integer, jsonb, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, integer, jsonb, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 import { organizations } from "./orgs";
 
@@ -9,6 +9,7 @@ import { organizations } from "./orgs";
 // to tell the same story. State lives in the DB so the run is resumable.
 export const solutionStatus = pgEnum("solution_status", [
   "diagnosing",
+  "researching",
   "solving",
   "verifying",
   "revising",
@@ -28,6 +29,10 @@ export const solutions = pgTable("solutions", {
   problem: jsonb("problem"),
   // The single structured answer everything renders from.
   model: jsonb("model"),
+  // Gathered, citable evidence (from project knowledge/sources + optional web).
+  evidence: jsonb("evidence"),
+  // Whether this run gathers and cites evidence before solving.
+  researchMode: boolean("research_mode").notNull().default(true),
   // The self-check: does this actually solve the diagnosed problem?
   verification: jsonb("verification"),
   iteration: integer("iteration").notNull().default(0),

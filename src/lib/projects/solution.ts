@@ -7,8 +7,10 @@ import { organizations, projects, solutions, type Organization, type Project, ty
 
 import { enqueueSolution } from "@/lib/agents/engine";
 import { extractJson } from "@/lib/agents/json";
-import { systemReply } from "@/lib/agents/subagent";
-import { recordProjectEvent, retrieveProjectContext } from "./knowledge";
+import { subagentForRole } from "@/lib/agents/roles";
+import { systemReply, webResearchEnabled } from "@/lib/agents/subagent";
+import { retrieveContext } from "@/lib/rag/retrieve";
+import { embedOne, findRelatedItems, projectCollectionId, recordProjectEvent, retrieveProjectContext } from "./knowledge";
 import { parseCharter, scopeBlock } from "./scoping";
 
 // The Solution engine — the spine of the app. From a project's brief + scope +
@@ -50,6 +52,24 @@ export const verificationSchema = z.object({
 });
 export type Verification = z.infer<typeof verificationSchema>;
 
+// Citable evidence the solution stands on. Each item gets an [E#] tag the solver
+// references, so every claim is traceable to a source (a document, a project
+// knowledge item, or a web page).
+export const evidenceSchema = z.array(
+  z.object({
+    id: z.string().max(8),
+    snippet: z.string().max(1200),
+    source: z.string().max(300),
+    kind: z.string().max(40),
+    ref: z.string().nullable().optional(),
+  })
+);
+export type EvidenceItem = z.infer<typeof evidenceSchema>[number];
+
+const webEvidenceSchema = z.object({
+  evidence: z.array(z.object({ claim: z.string().max(600), source: z.string().max(400).default("") })).max(8).default([]),
+});
+
 const DIAGNOSER = "You are a razor-sharp strategy consultant. You cut through a brief to the REAL problem that must be solved — which is often not the question as asked — and define exactly what a good answer must achieve. You are precise and decisive.";
 const SOLVER = "You are a principal consultant producing the definitive answer to a problem. You synthesize evidence into one coherent, decision-ready solution: a clear recommendation, the findings and analysis that support it, the risks, and a concrete plan. You are specific and never hand-wave.";
 const VERIFIER = "You are a demanding reviewer. Your only question is whether the proposed solution actually solves the stated problem and meets its success criteria. You are honest about gaps and never rubber-stamp.";
@@ -76,10 +96,10 @@ export async function latestSolution(projectId: string): Promise<Solution | null
 }
 
 /** Start a fresh solve for a project and kick off the run. */
-export async function startSolution(projectId: string, orgId: string, userId: string | null): Promise<string> {
+export async function startSolution(projectId: string, orgId: string, userId: string | null, research = true): Promise<string> {
   const [s] = await db
     .insert(solutions)
-    .values({ projectId, organizationId: orgId, status: "diagnosing", createdByUserId: userId ?? null })
+    .values({ projectId, organizationId: orgId, status: "diagnosing", researchMode: research, createdByUserId: userId ?? null })
     .returning();
   enqueueSolution(s.id);
   return s.id;
@@ -102,6 +122,7 @@ export async function advanceSolution(solutionId: string): Promise<void> {
 
   let terminal = false;
   if (s.status === "diagnosing") await diagnose(s, project, org);
+  else if (s.status === "researching") await research(s, project, org);
   else if (s.status === "solving" || s.status === "revising") await solve(s, project, org);
   else if (s.status === "verifying") terminal = await verify(s, project, org);
 
@@ -131,15 +152,89 @@ async function diagnose(s: Solution, project: Project, org: Organization): Promi
     ? parsed.data
     : { coreProblem: project.description?.trim() || project.title, whyItMatters: "", decision: "", solutionCriteria: [] };
 
-  await db.update(solutions).set({ problem, status: "solving", updatedAt: new Date() }).where(eq(solutions.id, s.id));
+  const next = s.researchMode ? "researching" : "solving";
+  await db.update(solutions).set({ problem, status: next, updatedAt: new Date() }).where(eq(solutions.id, s.id));
   await recordProjectEvent(project.id, "solution_diagnosed", `Diagnosed the core problem: ${problem.coreProblem.slice(0, 120)}`, { type: "solution", id: s.id });
+}
+
+/**
+ * Gather citable evidence for the diagnosed problem: excerpts from the project's
+ * own documents, its knowledge items, and — when web research is enabled — a few
+ * web findings. Each becomes an [E#] the solver can cite, so every claim is
+ * traceable.
+ */
+async function research(s: Solution, project: Project, org: Organization): Promise<void> {
+  const problem = problemSchema.parse(s.problem ?? {});
+  const query = problem.coreProblem;
+  const raw: Omit<EvidenceItem, "id">[] = [];
+
+  // 1. Document excerpts from the project's own sources.
+  try {
+    const collectionId = await projectCollectionId(project.id, org.id);
+    const retrieved = await retrieveContext([collectionId], query);
+    for (const src of retrieved.sources.slice(0, 8)) {
+      raw.push({ snippet: src.snippet, source: src.filename, kind: "document", ref: src.documentId });
+    }
+  } catch (err) {
+    console.error("evidence: document retrieval failed", err);
+  }
+
+  // 2. The project's structured knowledge.
+  try {
+    const emb = await embedOne(query);
+    if (emb) {
+      const related = await findRelatedItems(project.id, emb.vector, emb.modelId, 8);
+      for (const r of related) {
+        if (r.item.status === "superseded") continue;
+        raw.push({ snippet: r.item.content, source: "project knowledge", kind: r.item.type, ref: r.item.id });
+      }
+    }
+  } catch (err) {
+    console.error("evidence: knowledge retrieval failed", err);
+  }
+
+  // 3. Web findings, when the org has web research on.
+  if (webResearchEnabled(org)) {
+    try {
+      const persona = subagentForRole("researcher").persona;
+      const text = await systemReply(
+        org,
+        [
+          `Research the web for concrete, current evidence relevant to this problem: "${query}".`,
+          "Return only well-sourced facts, each with the URL it came from. Do not invent sources.",
+          'Respond with JSON only: {"evidence":[{"claim":"...","source":"<url>"}]}',
+        ].join("\n"),
+        { persona, gen: generation.extract, withTools: true }
+      );
+      const parsed = webEvidenceSchema.safeParse(extractJson(text));
+      if (parsed.success) {
+        for (const e of parsed.data.evidence) if (e.claim.trim()) raw.push({ snippet: e.claim, source: e.source || "web", kind: "web", ref: null });
+      }
+    } catch (err) {
+      console.error("evidence: web research failed", err);
+    }
+  }
+
+  // Number and cap.
+  const evidence: EvidenceItem[] = raw.slice(0, 14).map((e, i) => ({ ...e, id: `E${i + 1}` }));
+
+  await db.update(solutions).set({ evidence, status: "solving", updatedAt: new Date() }).where(eq(solutions.id, s.id));
+  await recordProjectEvent(project.id, "solution_researched", `Gathered ${evidence.length} pieces of evidence`, { type: "solution", id: s.id });
 }
 
 async function solve(s: Solution, project: Project, org: Organization): Promise<void> {
   const problem = problemSchema.parse(s.problem ?? {});
   const verification = s.verification ? verificationSchema.safeParse(s.verification) : null;
+  const evidence = s.evidence ? evidenceSchema.safeParse(s.evidence).data ?? [] : [];
   const isRevision = s.status === "revising";
-  const context = await retrieveProjectContext({ id: project.id, organizationId: org.id }, problem.coreProblem).catch(() => "");
+  const context = evidence.length === 0 ? await retrieveProjectContext({ id: project.id, organizationId: org.id }, problem.coreProblem).catch(() => "") : "";
+
+  const evidenceBlock = evidence.length
+    ? [
+        "Evidence — cite the pieces that support each claim using their [E#] tag (in findings, analysis points, and metric notes). Do not invent evidence or sources:",
+        ...evidence.map((e) => `[${e.id}] (${e.source}) ${e.snippet}`),
+      ].join("\n")
+    : "";
 
   const text = await runRole(
     org,
@@ -149,11 +244,12 @@ async function solve(s: Solution, project: Project, org: Organization): Promise<
       `Core problem: ${problem.coreProblem}`,
       problem.decision ? `Key decision: ${problem.decision}` : "",
       problem.solutionCriteria.length ? `A good solution must: ${problem.solutionCriteria.join("; ")}` : "",
-      context ? `\nEvidence available:\n${context}\n` : "",
+      evidenceBlock ? `\n${evidenceBlock}\n` : context ? `\nEvidence available:\n${context}\n` : "",
       isRevision && verification?.success && verification.data.fixes.length
         ? `Your previous attempt fell short. Fix these gaps:\n${verification.data.fixes.map((f) => `- ${f}`).join("\n")}`
         : "",
       "Deliver ONE coherent, decision-ready answer: a title, an executive summary, a single clear recommendation, the findings and analysis that support it, the key risks with mitigations, a concrete plan (steps, and owners where sensible), and any quantitative metrics that matter.",
+      evidence.length ? "Cite the evidence behind each finding, analysis point, and metric using its [E#] tag." : "",
       'Respond with JSON only: {"title":"...","executiveSummary":"...","recommendation":"...","findings":[{"title":"...","detail":"..."}],"analysis":[{"point":"...","evidence":"..."}],"risks":[{"risk":"...","mitigation":"..."}],"plan":[{"step":"...","detail":"...","owner":"..."}],"metrics":[{"name":"...","value":"...","note":"..."}]}',
     ]
       .filter(Boolean)

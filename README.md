@@ -6,9 +6,10 @@ LoomAI turns a rough brief into a complete, consistent, decision-ready output pa
 
 ### The one flow: brief → problem → solution → package
 1. **Diagnose** — a strategist subagent finds the core problem to solve (often not the literal ask), the decision to make, and what "solved" looks like.
-2. **Solve** — one structured **Solution** is produced: executive summary, a single clear recommendation, the findings and analysis behind it, risks with mitigations, a concrete plan, and the numbers.
-3. **Verify** — a reviewer checks the answer against the diagnosed problem and its success criteria, and revises until it passes (or hits the iteration cap).
-4. **Render** — that one Solution downloads as a **Report** (PDF/Word/HTML/Markdown), a **Deck** (`.pptx`), a **Model** (`.xlsx`), and a **One-pager** — all guaranteed consistent because they come from the same source. Change the brief, re-solve, and every format updates in lockstep.
+2. **Research** *(optional, on by default)* — a researcher gathers citable **evidence** for the problem: excerpts from the project's own documents, its structured knowledge, and — when web research is enabled — a few web findings. Each becomes a numbered `[E#]` source.
+3. **Solve** — one structured **Solution** is produced: executive summary, a single clear recommendation, the findings and analysis behind it, risks with mitigations, a concrete plan, and the numbers — with every claim **cited `[E#]`** back to the evidence.
+4. **Verify** — a reviewer checks the answer against the diagnosed problem and its success criteria, and revises until it passes (or hits the iteration cap).
+5. **Render** — that one Solution downloads as a **Report** (PDF/Word/HTML/Markdown), a **Deck** (`.pptx`), a **Model** (`.xlsx`), and a **One-pager** — every format carries the same recommendation *and* a **Sources** section, so they're consistent and auditable. Change the brief, re-solve, and every format updates in lockstep.
 
 Everything below is how the project builds the context and evidence the Solution stands on. There is no AI org chart — projects spin up **ephemeral subagents** (a persona for one task, gone when done), so it all works with zero setup. LM Studio is a first-class inference engine; any OpenAI-style API works too.
 

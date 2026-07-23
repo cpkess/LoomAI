@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { solutionModelSchema, type Problem } from "./solution";
+import { evidenceSchema, solutionModelSchema, type Problem } from "./solution";
 import { solutionToDeck, solutionToMarkdown, solutionToOnePager, solutionToWorkbook } from "./solutionRender";
+
+const evidence = evidenceSchema.parse([
+  { id: "E1", snippet: "EU SaaS grew 22% in 2024", source: "https://example.com/eu", kind: "web" },
+  { id: "E2", snippet: "40 leads in pipeline", source: "pipeline.xlsx", kind: "document", ref: "doc-1" },
+]);
 
 const problem: Problem = {
   coreProblem: "Whether to enter the EU market",
@@ -51,6 +56,24 @@ describe("solution renderers — one source, consistent formats", () => {
     expect(names).toEqual(expect.arrayContaining(["Metrics", "Plan", "Risks", "Findings"]));
     const metrics = wb.sheets.find((s) => s.name === "Metrics")!;
     expect(metrics.rows[0]).toEqual(["TAM", "€2.1B", "2025"]);
+  });
+
+  it("adds a Sources section to every format when evidence is present", () => {
+    const md = solutionToMarkdown(problem, model, evidence);
+    expect(md).toContain("## Sources");
+    expect(md).toContain("**[E1]**");
+    expect(md).toContain("https://example.com/eu");
+
+    const deck = solutionToDeck(problem, model, evidence);
+    expect(deck.slides.map((s) => s.title)).toContain("Sources");
+
+    const wb = solutionToWorkbook(model, evidence);
+    const sources = wb.sheets.find((s) => s.name === "Sources")!;
+    expect(sources.rows[0]).toEqual(["E1", "https://example.com/eu", "web", "EU SaaS grew 22% in 2024"]);
+  });
+
+  it("omits Sources when there's no evidence", () => {
+    expect(solutionToMarkdown(problem, model)).not.toContain("## Sources");
   });
 
   it("degrades gracefully on an empty model", () => {

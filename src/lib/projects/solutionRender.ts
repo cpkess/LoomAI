@@ -1,7 +1,7 @@
 import type { DeckSpec } from "@/lib/export/pptx";
 import type { WorkbookSpec } from "@/lib/export/xlsx";
 
-import type { Problem, SolutionModel } from "./solution";
+import type { EvidenceItem, Problem, SolutionModel } from "./solution";
 
 // One Solution model → every format. These are pure functions, so the report,
 // the deck, the workbook, and the one-pager can never disagree: they all read
@@ -11,7 +11,7 @@ export const SOLUTION_FORMATS = ["report", "onepager", "deck", "model", "pdf", "
 export type SolutionFormat = (typeof SOLUTION_FORMATS)[number];
 
 /** The full report as Markdown (also the source for PDF/DOCX/HTML). */
-export function solutionToMarkdown(problem: Problem | null, model: SolutionModel): string {
+export function solutionToMarkdown(problem: Problem | null, model: SolutionModel, evidence: EvidenceItem[] = []): string {
   const out: string[] = [`# ${model.title || "Solution"}`];
 
   if (model.executiveSummary) out.push(`## Executive summary\n\n${model.executiveSummary}`);
@@ -44,6 +44,10 @@ export function solutionToMarkdown(problem: Problem | null, model: SolutionModel
     out.push(`## Key metrics\n\n| Metric | Value | Note |\n| --- | --- | --- |\n${rows}`);
   }
 
+  if (evidence.length) {
+    out.push(`## Sources\n\n${evidence.map((e) => `- **[${e.id}]** *(${e.source})* — ${e.snippet}`).join("\n")}`);
+  }
+
   return out.join("\n\n");
 }
 
@@ -61,7 +65,7 @@ export function solutionToOnePager(problem: Problem | null, model: SolutionModel
 }
 
 /** The presentation deck spec (rendered to .pptx). */
-export function solutionToDeck(problem: Problem | null, model: SolutionModel): DeckSpec {
+export function solutionToDeck(problem: Problem | null, model: SolutionModel, evidence: EvidenceItem[] = []): DeckSpec {
   const slides: DeckSpec["slides"] = [];
 
   if (model.executiveSummary) {
@@ -91,12 +95,15 @@ export function solutionToDeck(problem: Problem | null, model: SolutionModel): D
   if (model.metrics.length) {
     slides.push({ title: "Key metrics", bullets: model.metrics.map((m) => `${m.name}: ${m.value}`) });
   }
+  if (evidence.length) {
+    slides.push({ title: "Sources", bullets: evidence.map((e) => `[${e.id}] ${e.source}`) });
+  }
 
   return { title: model.title || "Solution", subtitle: model.recommendation ? truncate(model.recommendation, 140) : problem?.coreProblem, slides };
 }
 
 /** The workbook spec (rendered to .xlsx). */
-export function solutionToWorkbook(model: SolutionModel): WorkbookSpec {
+export function solutionToWorkbook(model: SolutionModel, evidence: EvidenceItem[] = []): WorkbookSpec {
   const sheets: WorkbookSpec["sheets"] = [];
 
   if (model.metrics.length) {
@@ -110,6 +117,9 @@ export function solutionToWorkbook(model: SolutionModel): WorkbookSpec {
   }
   if (model.findings.length) {
     sheets.push({ name: "Findings", columns: ["Finding", "Detail"], rows: model.findings.map((f) => [f.title, f.detail]) });
+  }
+  if (evidence.length) {
+    sheets.push({ name: "Sources", columns: ["ID", "Source", "Kind", "Evidence"], rows: evidence.map((e) => [e.id, e.source, e.kind, e.snippet]) });
   }
   if (sheets.length === 0) sheets.push({ name: "Summary", columns: ["Item"], rows: [[model.title || "Solution"]] });
 
