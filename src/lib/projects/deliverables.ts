@@ -23,7 +23,7 @@ import { slideFromMarkdown, type DeckSpec } from "@/lib/export/pptx";
 import { sheetFromMarkdown, type WorkbookSpec } from "@/lib/export/xlsx";
 import { structuredKind } from "./deliverableKinds";
 import { recordProjectEvent, retrieveProjectContext } from "./knowledge";
-import { parseCharter, scopeBlock } from "./scoping";
+import { normalizeKind, parseCharter, scopeBlock } from "./scoping";
 import { addSource } from "./sources";
 import { evaluateQualityGates, resolveQualityConfig, type SectionIssue } from "./quality";
 
@@ -77,6 +77,73 @@ export async function activeDeliverableIds(): Promise<string[]> {
 
 export async function markDeliverableFailed(id: string, message: string): Promise<void> {
   await db.update(deliverables).set({ status: "failed", error: message, updatedAt: new Date() }).where(eq(deliverables.id, id));
+}
+
+/** Create a deliverable and kick off its production run. */
+export async function createDeliverable(input: {
+  projectId: string;
+  orgId: string;
+  title: string;
+  kind: string;
+  brief: string | null;
+  qualityConfig?: unknown;
+  createdByUserId?: string | null;
+}): Promise<string> {
+  const [d] = await db
+    .insert(deliverables)
+    .values({
+      projectId: input.projectId,
+      organizationId: input.orgId,
+      title: input.title,
+      kind: normalizeKind(input.kind),
+      brief: input.brief,
+      qualityConfig: (input.qualityConfig ?? {}) as Record<string, unknown>,
+      createdByUserId: input.createdByUserId ?? null,
+    })
+    .returning();
+  enqueueDeliverable(d.id);
+  return d.id;
+}
+
+/**
+ * Generate the deliverables the project's work plan calls for. Creates + kicks
+ * off each planned deliverable (skipping any already present by title); if the
+ * plan names none, produces one report grounded in the objective. Returns the
+ * number started.
+ */
+export async function generatePlannedDeliverables(input: {
+  projectId: string;
+  orgId: string;
+  createdByUserId?: string | null;
+}): Promise<number> {
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, input.projectId) });
+  if (!project) return 0;
+  const charter = parseCharter(project.charter);
+  const objective = charter?.objective?.trim() || project.description?.trim() || null;
+
+  const existing = await db.query.deliverables.findMany({
+    where: eq(deliverables.projectId, input.projectId),
+    columns: { title: true },
+  });
+  const seen = new Set(existing.map((e) => e.title.trim().toLowerCase()));
+
+  const allPlanned = charter?.deliverables ?? [];
+  let toMake: { title: string; kind: string; brief: string | null }[];
+  if (allPlanned.length > 0) {
+    // Generate any planned deliverables not already present (idempotent).
+    toMake = allPlanned
+      .filter((d) => d.title.trim() && !seen.has(d.title.trim().toLowerCase()))
+      .map((d) => ({ title: d.title, kind: d.kind, brief: d.brief?.trim() || objective }));
+  } else {
+    // No plan yet — produce one report grounded in the objective, once.
+    const defaultTitle = `${project.title} report`;
+    toMake = seen.has(defaultTitle.toLowerCase()) ? [] : [{ title: defaultTitle, kind: "report", brief: objective }];
+  }
+
+  for (const d of toMake) {
+    await createDeliverable({ projectId: input.projectId, orgId: input.orgId, title: d.title, kind: d.kind, brief: d.brief, createdByUserId: input.createdByUserId });
+  }
+  return toMake.length;
 }
 
 /** Run one specialist subagent (its built-in persona) to produce a step. */

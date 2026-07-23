@@ -1,10 +1,10 @@
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { enqueueDeliverable } from "@/lib/agents/engine";
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { db } from "@/lib/db";
 import { deliverables, projects } from "@/lib/db/schema";
+import { createDeliverable } from "@/lib/projects/deliverables";
 import { DELIVERABLE_KINDS } from "@/lib/projects/deliverableKinds";
 import { parseCharter } from "@/lib/projects/scoping";
 
@@ -57,20 +57,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ orgSlug
     const charter = parseCharter(project.charter);
     const brief = parsed.data.brief?.trim() || charter?.objective?.trim() || project.description?.trim() || null;
 
-    const [d] = await db
-      .insert(deliverables)
-      .values({
-        projectId,
-        organizationId: ctx.org.id,
-        title: parsed.data.title,
-        kind: parsed.data.kind,
-        brief,
-        qualityConfig: parsed.data.qualityConfig ?? {},
-        createdByUserId: ctx.user.id,
-      })
-      .returning();
-    enqueueDeliverable(d.id);
-    return Response.json({ deliverable: { id: d.id } }, { status: 201 });
+    const id = await createDeliverable({
+      projectId,
+      orgId: ctx.org.id,
+      title: parsed.data.title,
+      kind: parsed.data.kind,
+      brief,
+      qualityConfig: parsed.data.qualityConfig,
+      createdByUserId: ctx.user.id,
+    });
+    return Response.json({ deliverable: { id } }, { status: 201 });
   } catch (err) {
     return errorResponse(err);
   }

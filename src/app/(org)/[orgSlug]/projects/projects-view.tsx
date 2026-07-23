@@ -677,6 +677,7 @@ interface DeliverableRow {
 function DeliverablesTab({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
   const [rows, setRows] = useState<DeliverableRow[] | null>(null);
   const [creating, setCreating] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -689,16 +690,35 @@ function DeliverablesTab({ orgSlug, projectId }: { orgSlug: string; projectId: s
     return () => clearInterval(t);
   }, [load]);
 
+  async function generate() {
+    setGenerating(true);
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/deliverables/generate`, { method: "POST" });
+    setGenerating(false);
+    if (!res.ok) {
+      toast.error("Could not generate deliverables");
+      return;
+    }
+    const { created } = await res.json();
+    toast.success(created > 0 ? `Generating ${created} deliverable${created === 1 ? "" : "s"} from the work plan` : "Everything in the plan is already generated");
+    void load();
+  }
+
   if (openId) return <DeliverableDetail orgSlug={orgSlug} projectId={projectId} deliverableId={openId} onBack={() => { setOpenId(null); void load(); }} />;
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">Big outputs produced by an orchestrated multi-agent workflow — plan, write, critique, revise.</p>
-        <Button size="sm" onClick={() => setCreating(true)}>
-          <Plus />
-          New deliverable
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button size="sm" onClick={generate} disabled={generating}>
+            {generating ? <Loader2 className="animate-spin" /> : <Sparkles />}
+            Generate deliverables
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
+            <Plus />
+            New deliverable
+          </Button>
+        </div>
       </div>
       {rows === null ? (
         <Loading />
