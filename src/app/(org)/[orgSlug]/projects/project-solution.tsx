@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, FileText, Loader2, Presentation, Search, Sparkles, Target } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, FileText, Loader2, Presentation, Search, ShieldAlert, Sparkles, Target } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -44,8 +44,17 @@ interface ResearchRecord {
   questions: { question: string; why: string; found: number }[];
   rounds: number;
   counts: { document: number; knowledge: number; web: number };
+  blocked: { url: string; reason: string; detail: string }[];
   citation: { claims: number; cited: number; coverage: number; unknownRefs: string[] } | null;
 }
+
+const BLOCK_LABEL: Record<string, string> = {
+  captcha: "CAPTCHA — skipped, not solved",
+  bot_wall: "blocked by bot protection",
+  rate_limited: "rate-limited — backed off",
+  login_required: "needs a login",
+  paywall: "paywalled",
+};
 interface SolutionState {
   id: string;
   status: string;
@@ -218,6 +227,26 @@ function ResearchCard({ research }: { research: ResearchRecord }) {
             </div>
           ))}
         </div>
+
+        {research.blocked?.length > 0 && (
+          <div className="flex flex-col gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium">
+              <ShieldAlert className="size-3.5 text-amber-500" />
+              {research.blocked.length} source{research.blocked.length === 1 ? " was" : "s were"} found but couldn&apos;t be read
+            </div>
+            <p className="text-xs text-muted-foreground">
+              These sit behind access controls, so they were skipped rather than worked around — nothing here was cited.
+            </p>
+            {research.blocked.map((b, i) => (
+              <div key={i} className="flex items-center gap-1.5 text-xs">
+                <Badge variant="outline" className="shrink-0 text-[10px]">{BLOCK_LABEL[b.reason] ?? b.reason}</Badge>
+                <a href={b.url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-muted-foreground underline underline-offset-2 hover:text-foreground">
+                  {b.url}
+                </a>
+              </div>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

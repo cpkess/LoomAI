@@ -15,11 +15,13 @@ Everything below is how the project builds the context and evidence the Solution
 
 ### Sourcing you can check
 
-A citation is only worth something if you can follow it. Three rules make that true:
+A citation is only worth something if you can follow it. These rules make that true:
 
 - **The model never supplies a URL.** LoomAI runs the search itself, fetches the actual pages, and asks the model only to extract claims *from text it was handed*. The URL and title come from the fetch, so a web citation always points at a page that exists and really said it. If a page won't load, its real search-result snippet is kept (scored lower) rather than the source being dropped.
 - **Local evidence names its real origin.** Knowledge items cite the document or note they were extracted from — *"Q3 board deck (project knowledge)"* — not a generic label, resolved through the knowledge item's recorded provenance.
 - **Citations are validated, not trusted.** After the solve, `[E#]` tags are checked against the evidence that actually exists: invented references are stripped from the output, grounding is measured (*"60% of claims cited"*), and a solution that cited nonexistent evidence **fails verification and goes back for revision** regardless of how good the prose read.
+- **Obstacles and gates are treated differently.** Cookie/consent banners and pop-up overlays are dismissed automatically so the content behind them can be read — the same click a person makes on arrival. **Access controls are not touched:** a CAPTCHA, bot wall, login, or paywall is *detected and reported*, never solved or worked around. The source is recorded as unreachable, nothing is cited from it, and the run moves on without retrying. That way "no evidence exists" is never confused with "we couldn't get in" — and the blocked sources are listed in the UI *and in the exported report*, so a reader knows exactly what the answer does and doesn't cover. If you need what's behind a wall, the answer is credentials or an API, not a bypass.
+- **LoomAI is a polite client.** It honours `robots.txt` (including `Crawl-delay`), identifies itself truthfully in its User-Agent, and paces itself per host so research never hammers a site it's about to cite.
 
 The Solution tab shows the whole research record — each question, how many sources it turned up, which ones came back empty, per-channel counts, and the citation coverage — so you can see where the answer is well-founded and where it's thin. Tunable via `LOOMAI_RESEARCH_ROUNDS`, `LOOMAI_RESEARCH_QUESTIONS`, `LOOMAI_RESEARCH_MAX_EVIDENCE`, `LOOMAI_RESEARCH_WEB_PAGES`, `LOOMAI_RESEARCH_CONCURRENCY`.
 
@@ -47,7 +49,7 @@ The Solution tab shows the whole research record — each question, how many sou
 
 ## Platform
 
-- **Web research (free, no API keys)** — the researcher subagent gets three tools: `web_search` (DuckDuckGo, key-less), `web_open` (fetch a page's text + links and follow them step by step), and `web_browse` (a real headless Chromium that runs JavaScript). Chromium ships in the Docker image; for bare `npm run dev`, point `LOOMAI_CHROMIUM_PATH` at a local Chrome/Chromium (or rely on `web_open`). Toggle in Settings.
+- **Web research (free, no API keys)** — the researcher subagent gets four tools: `web_search` (DuckDuckGo, key-less), `web_open` (fetch a page's text + links and follow them step by step), `web_browse` (a real headless Chromium that runs JavaScript), and `web_navigate` (the same browser, but it also clears cookie/consent banners and pop-up overlays, and reports a gated page as blocked instead of returning nothing). Chromium ships in the Docker image; for bare `npm run dev`, point `LOOMAI_CHROMIUM_PATH` at a local Chrome/Chromium (or rely on `web_open`). Toggle in Settings. Pacing and timeouts: `LOOMAI_NAV_HOST_INTERVAL_MS`, `LOOMAI_NAV_TIMEOUT_MS`.
 - **Knowledge that compounds** — each project keeps its own scoped knowledge graph; substantive chat answers are captured back into that project's knowledge (heuristic-gated and embedding-deduped, on by default) so later work in the project builds on them. Knowledge lives per project — there is no central library.
 - **Tuned for capable local models** — calibrated for a ~32k-context local model (e.g. Gemma 3 27B): low temperatures where consistency matters (planning, extraction, summaries), generous budgets for long-form work, a large retrieval budget (12 chunks). Every knob is overridable via env vars (`LOOMAI_TEMP_*`, `LOOMAI_MAXTOK_*`, `LOOMAI_RETRIEVAL_TOPK`, …).
 - **Real, downloadable deliverables** — prose kinds download as **PDF**, **Word (.docx)**, **Markdown**, or **HTML** rendered on the fly; structured kinds download as native **PowerPoint (.pptx)** and **Excel (.xlsx)**.
@@ -100,7 +102,7 @@ The Docker image ships as a self-updating checkout, so you don't have to manuall
 src/lib/ai         provider plugins (lmstudio, ollama, anthropic, openai-compatible) + registry
 src/lib/agents     ephemeral subagents (systemReply grounded generation), specialist role personas, the work queue
 src/lib/projects   Solution engine (diagnose → research → solve → verify) + deep research (question decomposition, multi-round multi-channel gathering, verifiable web sourcing, ranking, citation validation) + one-source multi-format renderers; Living Projects (scoping loop + work plan, knowledge graph, event-driven analysis, staleness, intelligence, briefing, chat) + multi-stage deliverable engine + quality gates
-src/lib/research   free web tools (DuckDuckGo search, fetch+links, headless-browser navigation)
+src/lib/research   free web tools (DuckDuckGo search, fetch+links, headless-browser navigation with consent-banner dismissal, access-gate detection, robots.txt + per-host pacing)
 src/lib/rag        parse (pdf/docx/pptx/xlsx/zip/images/transcripts) → chunk → embed → pgvector retrieve, in-process ingestion queue
 src/lib/export     render deliverables → PDF/DOCX/HTML/Markdown, native PPTX (pptxgenjs) + XLSX (exceljs)
 src/lib/auth       Auth.js credentials behind an AuthBackend interface (LDAP/OIDC pluggable), authorize()

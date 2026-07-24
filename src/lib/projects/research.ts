@@ -9,7 +9,8 @@ import { extractJson } from "@/lib/agents/json";
 import { subagentForRole } from "@/lib/agents/roles";
 import { systemReply, webResearchEnabled } from "@/lib/agents/subagent";
 import { retrieveScored } from "@/lib/rag/retrieve";
-import { fetchReadable, webSearch } from "@/lib/research/web";
+import { navigate } from "@/lib/research/navigate";
+import { browserAvailable, fetchReadable, webSearch } from "@/lib/research/web";
 
 import { embedOne, findRelatedItems, projectCollectionId } from "./knowledge";
 
@@ -96,6 +97,14 @@ export const researchRecordSchema = z.object({
     knowledge: 0,
     web: 0,
   }),
+  /**
+   * Sources we found but could not read — CAPTCHAs, bot walls, paywalls, logins.
+   * Recorded so "no evidence exists" is never confused with "we couldn't get in".
+   */
+  blocked: z
+    .array(z.object({ url: z.string().max(600), reason: z.string().max(40), detail: z.string().max(200).default("") }))
+    .max(20)
+    .default([]),
   /** Filled in after the solve, once citations can be checked. */
   citation: z
     .object({
@@ -373,19 +382,37 @@ const pageEvidenceSchema = z.object({
   evidence: z.array(z.object({ claim: z.string().max(700) })).max(3).default([]),
 });
 
+/** A source we could not read, and why. Reported rather than silently dropped. */
+export interface BlockedSource {
+  url: string;
+  reason: string;
+  detail: string;
+}
+
 /** The outside world, injectable so the sourcing rules can be tested offline. */
 export interface WebDeps {
   search: (query: string, limit: number) => Promise<{ title: string; url: string; snippet: string }[]>;
-  fetchPage: (url: string) => Promise<{ title: string; text: string }>;
+  fetchPage: (url: string) => Promise<{ title: string; text: string; blocked?: { reason: string; detail: string } | null }>;
   extract: (question: string, pageText: string) => Promise<string[]>;
 }
 
 function liveWebDeps(org: Organization): WebDeps {
   return {
     search: webSearch,
+    // Cheap fetch first; escalate to a real browser only when that comes back
+    // empty — which usually means JS-rendered content or a consent overlay.
+    // If the browser finds an access gate, we stop and say so.
     fetchPage: async (url) => {
-      const page = await fetchReadable(url);
-      return { title: page.title, text: page.text ?? "" };
+      try {
+        const page = await fetchReadable(url);
+        if ((page.text ?? "").trim().length >= 500) return { title: page.title, text: page.text ?? "" };
+      } catch {
+        /* fall through to the browser */
+      }
+      if (!browserAvailable()) throw new Error("page unreadable without a browser");
+      const nav = await navigate(url);
+      if (nav.blocked) return { title: nav.title, text: "", blocked: nav.blocked };
+      return { title: nav.title, text: nav.text };
     },
     extract: async (question, pageText) => {
       const text = await systemReply(
@@ -413,7 +440,13 @@ function liveWebDeps(org: Organization): WebDeps {
  * fetch, not the model. A page that won't load still yields its search snippet,
  * which is a real excerpt from a real result — better than dropping the source.
  */
-export async function gatherWeb(org: Organization, question: string, queries: string[], deps?: WebDeps): Promise<Candidate[]> {
+export async function gatherWeb(
+  org: Organization,
+  question: string,
+  queries: string[],
+  deps?: WebDeps,
+  onBlocked?: (blocked: BlockedSource) => void
+): Promise<Candidate[]> {
   const { search, fetchPage, extract } = deps ?? liveWebDeps(org);
   const seen = new Set<string>();
   const results: { title: string; url: string; snippet: string }[] = [];
@@ -446,6 +479,12 @@ export async function gatherWeb(org: Organization, question: string, queries: st
         const page = await fetchPage(result.url);
         title = page.title || title;
         text = page.text ?? "";
+        if (page.blocked) {
+          // An access gate, not content. Record it and leave the site alone —
+          // we do not retry, and we never cite a page we could not read.
+          onBlocked?.({ url: result.url, reason: page.blocked.reason, detail: page.blocked.detail });
+          return [];
+        }
       } catch {
         if (!result.snippet.trim()) return [];
         return [{ snippet: result.snippet.trim(), source: title, kind: "web", ref: null, url: result.url, score: 0.5, question }];
@@ -492,6 +531,7 @@ export async function deepResearch(input: DeepResearchInput): Promise<DeepResear
 
   let pool: Candidate[] = [];
   let roundsRun = 0;
+  const blocked = new Map<string, BlockedSource>();
   // Per question, the queries to try this round.
   let queue = questions.map((q) => ({ q, queries: q.queries.length ? q.queries : [q.question] }));
 
@@ -503,7 +543,9 @@ export async function deepResearch(input: DeepResearchInput): Promise<DeepResear
       const [docs, knowledge, webHits] = await Promise.all([
         gatherDocuments(projectId, org.id, q.question, primary),
         gatherKnowledge(projectId, q.question, primary),
-        web ? gatherWeb(org, q.question, queries) : Promise.resolve([] as Candidate[]),
+        web
+          ? gatherWeb(org, q.question, queries, undefined, (b) => blocked.set(b.url, b))
+          : Promise.resolve([] as Candidate[]),
       ]);
       return [...docs, ...knowledge, ...webHits];
     });
@@ -542,6 +584,7 @@ export async function deepResearch(input: DeepResearchInput): Promise<DeepResear
     })),
     rounds: roundsRun,
     counts,
+    blocked: [...blocked.values()].slice(0, 20),
     citation: null,
   });
 

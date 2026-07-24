@@ -11,7 +11,12 @@ export const SOLUTION_FORMATS = ["report", "onepager", "deck", "model", "pdf", "
 export type SolutionFormat = (typeof SOLUTION_FORMATS)[number];
 
 /** The full report as Markdown (also the source for PDF/DOCX/HTML). */
-export function solutionToMarkdown(problem: Problem | null, model: SolutionModel, evidence: EvidenceItem[] = []): string {
+export function solutionToMarkdown(
+  problem: Problem | null,
+  model: SolutionModel,
+  evidence: EvidenceItem[] = [],
+  blocked: { url: string; reason: string }[] = []
+): string {
   const out: string[] = [`# ${model.title || "Solution"}`];
 
   if (model.executiveSummary) out.push(`## Executive summary\n\n${model.executiveSummary}`);
@@ -51,6 +56,16 @@ export function solutionToMarkdown(problem: Problem | null, model: SolutionModel
           const label = e.url ? `[${e.source}](${e.url})` : e.source;
           return `- **[${e.id}]** *(${label})* — ${e.snippet}`;
         })
+        .join("\n")}`
+    );
+  }
+
+  // Say what we couldn't get to. A reader judging this document deserves to
+  // know which sources were unavailable rather than assuming full coverage.
+  if (blocked.length) {
+    out.push(
+      `### Sources consulted but unavailable\n\nThese were found during research but sit behind access controls, so they were not read and nothing below rests on them:\n\n${blocked
+        .map((b) => `- ${b.url} — ${b.reason.replace(/_/g, " ")}`)
         .join("\n")}`
     );
   }

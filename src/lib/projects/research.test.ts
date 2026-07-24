@@ -166,4 +166,20 @@ describe("web sourcing", () => {
     const items = await gatherWeb(org, "q", ["q"], deps({ search: async () => { throw new Error("HTTP 403"); } }));
     expect(items).toEqual([]);
   });
+
+  it("reports a gated page instead of citing it, and does not fall back to the search snippet", async () => {
+    const blocked: { url: string; reason: string }[] = [];
+    const items = await gatherWeb(
+      org,
+      "q",
+      ["q"],
+      deps({ fetchPage: async () => ({ title: "Just a moment...", text: "", blocked: { reason: "captcha", detail: "turnstile challenge present" } }) }),
+      (b) => blocked.push(b)
+    );
+    // Nothing cited — we never write up a page we could not read.
+    expect(items).toEqual([]);
+    // But the source is accounted for, so "no evidence" is distinguishable
+    // from "we couldn't get in".
+    expect(blocked).toEqual([{ url: "https://example.com/eu", reason: "captcha", detail: "turnstile challenge present" }]);
+  });
 });

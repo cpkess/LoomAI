@@ -3,7 +3,7 @@ import { FORMAT_META, renderDeliverable, type DeliverableFormat } from "@/lib/ex
 import { renderPptx } from "@/lib/export/pptx";
 import { renderXlsx } from "@/lib/export/xlsx";
 import { ownedProject } from "@/lib/projects/chat";
-import { evidenceSchema, latestSolution, problemSchema, solutionModelSchema } from "@/lib/projects/solution";
+import { evidenceSchema, latestSolution, problemSchema, researchRecordSchema, solutionModelSchema } from "@/lib/projects/solution";
 import { solutionToDeck, solutionToMarkdown, solutionToOnePager, solutionToWorkbook } from "@/lib/projects/solutionRender";
 import { slugify } from "@/lib/utils";
 
@@ -26,6 +26,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ orgSlug:
     const problem = s.problem ? problemSchema.safeParse(s.problem).data ?? null : null;
     const model = solutionModelSchema.parse(s.model);
     const evidence = s.evidence ? evidenceSchema.safeParse(s.evidence).data ?? [] : [];
+    const blocked = s.research ? researchRecordSchema.safeParse(s.research).data?.blocked ?? [] : [];
 
     const url = new URL(req.url);
     const doc = url.searchParams.get("doc") ?? "report"; // report | onepager | deck | model
@@ -43,7 +44,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ orgSlug:
     // Prose documents: report or one-pager, in md/html/pdf/docx.
     const format = (url.searchParams.get("format") ?? "md") as DeliverableFormat;
     if (!["md", "html", "pdf", "docx"].includes(format)) return Response.json({ error: "Unsupported format" }, { status: 400 });
-    const markdown = doc === "onepager" ? solutionToOnePager(problem, model) : solutionToMarkdown(problem, model, evidence);
+    const markdown = doc === "onepager" ? solutionToOnePager(problem, model) : solutionToMarkdown(problem, model, evidence, blocked);
     const bytes = await renderDeliverable(format, { title: model.title || "Solution", orgName: ctx.org.name, markdown });
     return binary(bytes, `${base}${doc === "onepager" ? "-onepager" : ""}.${FORMAT_META[format].ext}`, FORMAT_META[format].mime);
   } catch (err) {

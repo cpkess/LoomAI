@@ -80,6 +80,19 @@ describe("solution renderers — one source, consistent formats", () => {
     expect(solutionToMarkdown(problem, model)).not.toContain("## Sources");
   });
 
+  it("discloses sources that were found but couldn't be read", () => {
+    const md = solutionToMarkdown(problem, model, evidence, [{ url: "https://paywalled.example/x", reason: "captcha" }]);
+    expect(md).toContain("Sources consulted but unavailable");
+    expect(md).toContain("https://paywalled.example/x");
+    expect(md).toContain("captcha");
+    // And says plainly that nothing rests on them.
+    expect(md).toContain("not read");
+  });
+
+  it("says nothing about blocked sources when there were none", () => {
+    expect(solutionToMarkdown(problem, model, evidence)).not.toContain("unavailable");
+  });
+
   it("degrades gracefully on an empty model", () => {
     const empty = solutionModelSchema.parse({});
     expect(() => solutionToMarkdown(null, empty)).not.toThrow();
