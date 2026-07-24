@@ -171,6 +171,28 @@ export function rankEvidence<T extends Candidate>(items: T[], max = MAX_EVIDENCE
   return picked.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 }
 
+/**
+ * Merge evidence carried from earlier rounds with what this round found.
+ *
+ * A follow-up round exists because the user asked for a different avenue, so
+ * this round's findings get first call on the budget — otherwise well-scored
+ * older evidence would crowd out the very thing that was asked for. Carried
+ * evidence fills whatever remains, and anything re-found this round is deduped
+ * away so it isn't counted twice.
+ */
+export function mergeRounds<T extends Candidate>(carried: T[], fresh: T[], max: number): T[] {
+  const freshRanked = rankEvidence(fresh, max);
+  const seen = new Set(freshRanked.map((e) => `${e.url ?? e.source}|${dedupeKey(e.snippet)}`));
+  const remaining = max - freshRanked.length;
+  if (remaining <= 0) return freshRanked;
+
+  const carriedRanked = rankEvidence(
+    carried.filter((e) => !seen.has(`${e.url ?? e.source}|${dedupeKey(e.snippet)}`)),
+    remaining
+  );
+  return [...freshRanked, ...carriedRanked];
+}
+
 /** Assign the [E1]…[E#] tags the solver cites. */
 export function numberEvidence(items: Candidate[]): EvidenceItem[] {
   return items.map((e, i) => ({ ...e, id: `E${i + 1}` }));
@@ -251,7 +273,14 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
 
 // --- Step 1: decompose ------------------------------------------------------
 
-async function planResearch(org: Organization, coreProblem: string, criteria: string[], scope: string): Promise<ResearchQuestion[]> {
+async function planResearch(
+  org: Organization,
+  coreProblem: string,
+  criteria: string[],
+  scope: string,
+  direction: string,
+  alreadyKnown: string[]
+): Promise<ResearchQuestion[]> {
   try {
     const text = await systemReply(
       org,
@@ -259,6 +288,17 @@ async function planResearch(org: Organization, coreProblem: string, criteria: st
         `Problem to settle: ${coreProblem}`,
         criteria.length ? `A good answer must: ${criteria.join("; ")}` : "",
         scope ? `\n${scope}\n` : "",
+        // A follow-up round exists because the last one went the wrong way. The
+        // steer is the brief now, not a footnote to the original question.
+        direction
+          ? [
+              "",
+              "THIS IS A FOLLOW-UP ROUND. Earlier research has already been done, and the user has asked to pursue a specific avenue:",
+              `"${direction}"`,
+              "Your questions must target THAT avenue. Do not re-ask what was already covered — go where the user is pointing, even if it means leaving the earlier line of enquiry behind.",
+              alreadyKnown.length ? `\nAlready established (do not re-research):\n${alreadyKnown.slice(0, 10).map((k) => `- ${k}`).join("\n")}` : "",
+            ].join("\n")
+          : "",
         `Break this into at most ${MAX_QUESTIONS} specific research questions whose answers would settle it. For each, give the search phrasings you would actually use.`,
         'Respond with JSON only: {"questions":[{"question":"...","why":"...","queries":["...","..."]}]}',
       ]
@@ -547,6 +587,10 @@ export interface DeepResearchInput {
   scope: string;
   /** The project's brief, so it can be excluded from its own evidence. */
   description?: string | null;
+  /** User feedback steering a follow-up round toward a different avenue. */
+  direction?: string | null;
+  /** Evidence from earlier rounds, carried forward rather than re-gathered. */
+  priorEvidence?: EvidenceItem[];
 }
 
 export interface DeepResearchResult {
@@ -560,10 +604,24 @@ export interface DeepResearchResult {
  */
 export async function deepResearch(input: DeepResearchInput): Promise<DeepResearchResult> {
   const { org, projectId, coreProblem, criteria, scope } = input;
-  const questions = await planResearch(org, coreProblem, criteria, scope);
+  const direction = (input.direction ?? "").trim();
+  const carried = input.priorEvidence ?? [];
+  const questions = await planResearch(
+    org,
+    coreProblem,
+    criteria,
+    scope,
+    direction,
+    carried.map((e) => e.snippet.slice(0, 160))
+  );
   const web = webResearchEnabled(org);
   const excluded = await briefDocumentIds(projectId, input.description ?? null);
 
+  // A follow-up round adds to what's known rather than starting over. Prior
+  // evidence stays citable so the new answer can build on it; the [E#] ids are
+  // dropped because the merged set is renumbered at the end, keeping tags
+  // contiguous and unambiguous.
+  const carriedPool: Candidate[] = dedupeEvidence(carried.map(({ id: _id, ...rest }) => rest));
   let pool: Candidate[] = [];
   let roundsRun = 0;
   const blocked = new Map<string, BlockedSource>();
@@ -603,7 +661,7 @@ export async function deepResearch(input: DeepResearchInput): Promise<DeepResear
       .filter((entry) => entry.queries.length > 0);
   }
 
-  const evidence = numberEvidence(rankEvidence(pool, MAX_EVIDENCE));
+  const evidence = numberEvidence(mergeRounds(carriedPool, pool, MAX_EVIDENCE));
   const counts = { document: 0, knowledge: 0, web: 0 };
   for (const e of evidence) {
     if (e.kind === "document") counts.document++;

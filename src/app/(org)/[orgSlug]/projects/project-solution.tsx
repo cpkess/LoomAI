@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, FileText, Loader2, Presentation, Search, ShieldAlert, Sparkles, Target } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, FileText, Loader2, MessageSquare, Presentation, Search, ShieldAlert, Sparkles, Target } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 
 interface Problem {
@@ -59,12 +60,22 @@ interface SolutionState {
   id: string;
   status: string;
   iteration: number;
+  round: number;
+  direction: string | null;
   researchMode: boolean;
   problem: Problem | null;
   model: SolutionModel | null;
   evidence: Evidence[];
   research: ResearchRecord | null;
   verification: Verification | null;
+}
+interface RoundSummary {
+  id: string;
+  round: number;
+  direction: string | null;
+  status: string;
+  score: number | null;
+  createdAt: string;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -78,13 +89,19 @@ const STATUS_LABEL: Record<string, string> = {
 export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
   const base = `/api/orgs/${orgSlug}/projects/${projectId}/solution`;
   const [sol, setSol] = useState<SolutionState | null | undefined>(undefined);
+  const [rounds, setRounds] = useState<RoundSummary[]>([]);
+  const [viewing, setViewing] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [research, setResearch] = useState(true);
 
   const load = useCallback(async () => {
-    const res = await fetch(base);
-    if (res.ok) setSol((await res.json()).solution);
-  }, [base]);
+    const res = await fetch(viewing ? `${base}?solutionId=${viewing}` : base);
+    if (res.ok) {
+      const body = await res.json();
+      setSol(body.solution);
+      setRounds(body.rounds ?? []);
+    }
+  }, [base, viewing]);
 
   useEffect(() => {
     void load();
@@ -92,19 +109,21 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
     return () => clearInterval(t);
   }, [load]);
 
-  async function solve() {
+  async function solve(direction?: string) {
     setStarting(true);
     const res = await fetch(base, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ research }),
+      body: JSON.stringify({ research, ...(direction ? { direction } : {}) }),
     });
     setStarting(false);
     if (!res.ok) {
       toast.error("Could not start");
       return;
     }
-    toast.success(research ? "Solving — gathering evidence first" : "Solving — diagnosing the core problem first");
+    // A new round becomes the one on screen.
+    setViewing(null);
+    toast.success(direction ? "New round — researching the avenue you asked for" : research ? "Solving — gathering evidence first" : "Solving — diagnosing the core problem first");
     void load();
   }
 
@@ -130,7 +149,7 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
             <Switch checked={research} onCheckedChange={setResearch} />
             <span>Deep research — break the problem into questions and source each one first</span>
           </label>
-          <Button onClick={solve} disabled={starting}>
+          <Button onClick={() => void solve()} disabled={starting}>
             {starting ? <Loader2 className="animate-spin" /> : <Sparkles />}
             Generate solution
           </Button>
@@ -155,19 +174,34 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
             {sol.verification.solvesProblem ? "Solves the problem" : "Best effort"} · {sol.verification.score}/100
           </Badge>
         ) : null}
+        {sol.round > 1 && <Badge variant="secondary">round {sol.round}</Badge>}
         {sol.iteration > 0 && <Badge variant="outline">revision {sol.iteration}</Badge>}
         <div className="ml-auto flex items-center gap-2">
-          {sol.model && <DownloadBar base={base} />}
+          {sol.model && <DownloadBar base={base} solutionId={sol.id} />}
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Switch checked={research} onCheckedChange={setResearch} />
             Research
           </label>
-          <Button size="sm" variant="outline" onClick={solve} disabled={starting || Boolean(running)}>
+          <Button size="sm" variant="outline" onClick={() => void solve()} disabled={starting || Boolean(running)}>
             {starting ? <Loader2 className="animate-spin" /> : <Sparkles />}
             Re-solve
           </Button>
         </div>
       </div>
+
+      {rounds.length > 1 && (
+        <RoundStrip rounds={rounds} currentId={sol.id} onPick={(id) => setViewing(id)} latestId={rounds[0]?.id ?? null} />
+      )}
+
+      {sol.direction && (
+        <div className="flex items-start gap-2 rounded-md border-l-2 border-primary bg-muted/40 p-3 text-sm">
+          <MessageSquare className="mt-0.5 size-4 shrink-0 text-primary" />
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">You asked this round to:</span>
+            <p>{sol.direction}</p>
+          </div>
+        </div>
+      )}
 
       {sol.problem && <ProblemCard problem={sol.problem} />}
 
@@ -180,6 +214,93 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
       {sol.research && <ResearchCard research={sol.research} />}
 
       {sol.evidence.length > 0 && <EvidenceCard evidence={sol.evidence} />}
+
+      {!running && <FollowUpCard busy={starting} isLatest={sol.id === (rounds[0]?.id ?? sol.id)} onAsk={(d) => void solve(d)} />}
+    </div>
+  );
+}
+
+/**
+ * Ask for another round. This is the main way to steer the work: the feedback
+ * becomes the brief for a fresh research pass that keeps what's already been
+ * found and goes after the avenue you name.
+ */
+function FollowUpCard({ busy, isLatest, onAsk }: { busy: boolean; isLatest: boolean; onAsk: (direction: string) => void }) {
+  const [text, setText] = useState("");
+  const direction = text.trim();
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <MessageSquare className="size-4 text-primary" />
+          Not what you needed?
+        </CardTitle>
+        <CardDescription>
+          Point it somewhere else and it runs another round — new research questions aimed at what you asked for, with the
+          evidence already gathered carried forward. The current answer is kept, so you can compare.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <Textarea
+          rows={3}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="e.g. Ignore the partner route — look at what acquiring a local competitor would cost, and what the regulatory timeline would be."
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && direction) onAsk(direction);
+          }}
+        />
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground">
+            {isLatest ? "⌘/Ctrl + Enter to run" : "This starts a new round from the latest answer, not the one you're viewing."}
+          </span>
+          <Button size="sm" disabled={busy || !direction} onClick={() => onAsk(direction)}>
+            {busy ? <Loader2 className="animate-spin" /> : <Search />}
+            Research this
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Earlier rounds stay reachable, so a steer that went nowhere isn't a loss. */
+function RoundStrip({
+  rounds,
+  currentId,
+  latestId,
+  onPick,
+}: {
+  rounds: RoundSummary[];
+  currentId: string;
+  latestId: string | null;
+  onPick: (id: string | null) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      <span className="text-muted-foreground">Rounds:</span>
+      {[...rounds].reverse().map((r) => {
+        const active = r.id === currentId;
+        return (
+          <button
+            key={r.id}
+            onClick={() => onPick(r.id === latestId ? null : r.id)}
+            title={r.direction ?? "The first pass"}
+            className={`rounded-md border px-2 py-1 transition-colors ${
+              active ? "border-primary bg-primary/10 font-medium" : "hover:border-primary/40"
+            }`}
+          >
+            {r.round}
+            {r.score !== null && <span className="ml-1 text-muted-foreground">{r.score}</span>}
+          </button>
+        );
+      })}
+      {currentId !== latestId && (
+        <button onClick={() => onPick(null)} className="ml-1 text-muted-foreground underline underline-offset-2 hover:text-foreground">
+          back to latest
+        </button>
+      )}
     </div>
   );
 }
@@ -288,8 +409,9 @@ function EvidenceCard({ evidence }: { evidence: Evidence[] }) {
   );
 }
 
-function DownloadBar({ base }: { base: string }) {
-  const link = (q: string) => `${base}/download?${q}`;
+function DownloadBar({ base, solutionId }: { base: string; solutionId: string }) {
+  // Download the round on screen, not whichever happens to be newest.
+  const link = (q: string) => `${base}/download?${q}&solutionId=${solutionId}`;
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <Button asChild size="sm">

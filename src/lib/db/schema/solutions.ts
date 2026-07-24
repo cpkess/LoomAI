@@ -36,6 +36,12 @@ export const solutions = pgTable("solutions", {
   research: jsonb("research"),
   // Whether this run gathers and cites evidence before solving.
   researchMode: boolean("research_mode").notNull().default(true),
+  // A follow-up round: the feedback that steered it ("look at X instead"), the
+  // round it continues from, and its position in the sequence. Rounds are kept
+  // rather than overwritten, so earlier answers stay inspectable.
+  direction: text("direction"),
+  parentSolutionId: uuid("parent_solution_id"),
+  round: integer("round").notNull().default(1),
   // The self-check: does this actually solve the diagnosed problem?
   verification: jsonb("verification"),
   iteration: integer("iteration").notNull().default(0),

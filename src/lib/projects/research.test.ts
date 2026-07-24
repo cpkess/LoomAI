@@ -8,6 +8,7 @@ import {
   extractCitations,
   fallbackPlan,
   gatherWeb,
+  mergeRounds,
   numberEvidence,
   rankEvidence,
   stripUnknownCitations,
@@ -68,6 +69,45 @@ describe("evidence ranking", () => {
   it("numbers evidence E1..En in rank order", () => {
     const numbered = numberEvidence([candidate({ snippet: "a", kind: "web" }), candidate({ snippet: "b", kind: "web" })]);
     expect(numbered.map((e) => e.id)).toEqual(["E1", "E2"]);
+  });
+});
+
+// A follow-up round exists because the user asked for a different avenue, so
+// what it finds must not be crowded out by well-scored evidence from before.
+describe("merging a follow-up round with what came before", () => {
+  const carried = [
+    candidate({ snippet: "old but highly relevant", kind: "document", score: 0.95, source: "old.md" }),
+    candidate({ snippet: "also old", kind: "document", score: 0.9, source: "old2.md" }),
+  ];
+  const fresh = [candidate({ snippet: "the new avenue", kind: "web", score: 0.6, url: "https://new.example/a" })];
+
+  it("gives this round's findings first call on the budget", () => {
+    const merged = mergeRounds(carried, fresh, 2);
+    expect(merged[0].snippet).toBe("the new avenue");
+    expect(merged).toHaveLength(2); // one carried item fills the remainder
+  });
+
+  it("keeps earlier evidence when there is room, so the answer still builds on it", () => {
+    const merged = mergeRounds(carried, fresh, 5);
+    expect(merged).toHaveLength(3);
+    expect(merged.map((e) => e.snippet)).toContain("old but highly relevant");
+  });
+
+  it("drops carried evidence entirely when the new round fills the budget", () => {
+    const many = Array.from({ length: 6 }, (_, i) => candidate({ snippet: `new ${i}`, kind: "web", score: 0.5 }));
+    const merged = mergeRounds(carried, many, 3);
+    expect(merged).toHaveLength(3);
+    expect(merged.every((e) => e.snippet.startsWith("new"))).toBe(true);
+  });
+
+  it("does not list the same finding twice when a round re-discovers it", () => {
+    const rediscovered = candidate({ snippet: "old but highly relevant", kind: "document", score: 0.7, source: "old.md" });
+    const merged = mergeRounds(carried, [rediscovered], 5);
+    expect(merged.filter((e) => e.snippet === "old but highly relevant")).toHaveLength(1);
+  });
+
+  it("behaves like a first round when there is nothing carried", () => {
+    expect(mergeRounds([], fresh, 5)).toHaveLength(1);
   });
 });
 

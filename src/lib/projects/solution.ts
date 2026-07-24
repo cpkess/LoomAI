@@ -119,6 +119,55 @@ export async function startSolution(projectId: string, orgId: string, userId: st
   return s.id;
 }
 
+/**
+ * Another round, steered by the user: "you looked at X, now look at Y".
+ *
+ * This is not a re-solve. The previous round is kept intact and its evidence is
+ * carried forward, so a follow-up builds on what was already established rather
+ * than paying to rediscover it. The feedback drives the new research questions
+ * and constrains the new answer.
+ *
+ * Re-diagnosing is deliberate: a steer like "actually, the real question is
+ * whether we should partner instead" changes what the problem *is*, and the
+ * round would be worthless if the diagnosis were frozen from the first pass.
+ */
+export async function continueSolution(
+  projectId: string,
+  orgId: string,
+  userId: string | null,
+  direction: string,
+  research = true
+): Promise<string> {
+  const previous = await latestSolution(projectId);
+  if (!previous) return startSolution(projectId, orgId, userId, research);
+
+  const [s] = await db
+    .insert(solutions)
+    .values({
+      projectId,
+      organizationId: orgId,
+      status: "diagnosing",
+      researchMode: research,
+      createdByUserId: userId ?? null,
+      direction: direction.trim(),
+      parentSolutionId: previous.id,
+      round: (previous.round ?? 1) + 1,
+      // Carried so the research phase can build on it; renumbered when merged.
+      evidence: previous.evidence ?? null,
+    })
+    .returning();
+
+  await recordProjectEvent(projectId, "solution_round", `Round ${s.round}: ${direction.trim().slice(0, 160)}`, { type: "solution", id: s.id });
+  enqueueSolution(s.id);
+  return s.id;
+}
+
+/** The answer this round is following on from, for context in prompts. */
+async function previousRound(s: Solution): Promise<Solution | null> {
+  if (!s.parentSolutionId) return null;
+  return (await db.query.solutions.findFirst({ where: eq(solutions.id, s.parentSolutionId) })) ?? null;
+}
+
 // --- The state machine ------------------------------------------------------
 
 /** Advance a solution by one step and re-enqueue until terminal. */
@@ -143,6 +192,9 @@ async function diagnose(s: Solution, project: Project, org: Organization): Promi
   const scope = scopeBlock(parseCharter(project.charter), project.description);
   const context = await retrieveProjectContext({ id: project.id, organizationId: org.id }, project.description ?? project.title).catch(() => "");
 
+  const prior = await previousRound(s);
+  const priorProblem = prior?.problem ? problemSchema.safeParse(prior.problem).data ?? null : null;
+
   const problem = await generateStructured({
     org,
     persona: DIAGNOSER,
@@ -153,6 +205,16 @@ async function diagnose(s: Solution, project: Project, org: Organization): Promi
       `A project named "${project.title}" needs a decisive answer.`,
       scope ? `\n${scope}\n` : project.description ? `Brief: ${project.description}` : "",
       context ? `\nWhat the project knows:\n${context}\n` : "",
+      s.direction
+        ? [
+            "",
+            "This is a FOLLOW-UP round. The problem was previously diagnosed as:",
+            `  "${priorProblem?.coreProblem ?? "(unrecorded)"}"`,
+            "The user has since directed the work:",
+            `  "${s.direction}"`,
+            "Re-diagnose in light of that steer. If it changes what the real problem is, say so — do not simply restate the earlier diagnosis.",
+          ].join("\n")
+        : "",
       "Diagnose the REAL core problem to solve (which may differ from the literal ask), why it matters, the key decision to be made, and the criteria a good solution must meet.",
       'Respond with JSON only: {"coreProblem":"...","whyItMatters":"...","decision":"...","solutionCriteria":["..."]}',
     ]
@@ -173,6 +235,9 @@ async function diagnose(s: Solution, project: Project, org: Organization): Promi
  */
 async function research(s: Solution, project: Project, org: Organization): Promise<void> {
   const problem = problemSchema.parse(s.problem ?? {});
+  // On a follow-up round the row was seeded with the previous round's evidence.
+  const priorEvidence = s.evidence ? evidenceSchema.safeParse(s.evidence).data ?? [] : [];
+
   const { evidence, record } = await deepResearch({
     org,
     projectId: project.id,
@@ -180,6 +245,8 @@ async function research(s: Solution, project: Project, org: Organization): Promi
     criteria: problem.solutionCriteria,
     scope: scopeBlock(parseCharter(project.charter), project.description),
     description: project.description,
+    direction: s.direction,
+    priorEvidence,
   });
 
   await db.update(solutions).set({ evidence, research: record, status: "solving", updatedAt: new Date() }).where(eq(solutions.id, s.id));
@@ -238,11 +305,28 @@ async function solve(s: Solution, project: Project, org: Organization): Promise<
   const context = evidence.length === 0 ? await retrieveProjectContext({ id: project.id, organizationId: org.id }, problem.coreProblem).catch(() => "") : "";
   const block = evidenceBlock(evidence);
 
+  // A steered round: the user's direction outranks the previous answer, and the
+  // previous answer is shown only so this round doesn't repeat it.
+  const prior = await previousRound(s);
+  const priorModel = prior?.model ? solutionModelSchema.safeParse(prior.model).data ?? null : null;
+  const steer = s.direction
+    ? [
+        "",
+        "THIS IS A FOLLOW-UP ROUND, requested by the user:",
+        `  "${s.direction}"`,
+        priorModel?.recommendation ? `The previous round recommended: "${priorModel.recommendation}"` : "",
+        "Address the user's direction. Where the new evidence supports a different conclusion, say so plainly and change the recommendation — do not defend the earlier answer out of consistency.",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
+
   // Shared framing every stage sees, so the three calls stay on the same problem.
   const framing = [
     `Core problem: ${problem.coreProblem}`,
     problem.decision ? `Key decision: ${problem.decision}` : "",
     problem.solutionCriteria.length ? `A good solution must: ${problem.solutionCriteria.join("; ")}` : "",
+    steer,
     block ? `\n${block}\n` : context ? `\nEvidence available:\n${context}\n` : "",
     isRevision && verification?.success && verification.data.fixes.length
       ? `A previous attempt fell short. Fix these gaps:\n${verification.data.fixes.map((f) => `- ${f}`).join("\n")}`

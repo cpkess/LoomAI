@@ -11,6 +11,16 @@ LoomAI turns a rough brief into a complete, consistent, decision-ready output pa
 4. **Verify** — a reviewer checks the answer against the diagnosed problem and its success criteria *and against its evidence*: citations are validated (invented `[E#]` refs are stripped and fail the check), grounding is measured, and unanswered research questions are surfaced as known blind spots. It revises until it passes (or hits the iteration cap).
 5. **Render** — that one Solution downloads as a **Report** (PDF/Word/HTML/Markdown), a **Deck** (`.pptx`), a **Model** (`.xlsx`), and a **One-pager** — every format carries the same recommendation *and* a **Sources** section, so they're consistent and auditable. Change the brief, re-solve, and every format updates in lockstep.
 
+### Steering it: rounds
+
+An answer you disagree with is the normal case, not a failure — you know things the evidence doesn't. So tell it where to go instead:
+
+> *"Ignore the partner route entirely. Look at what acquiring a local competitor would cost, and what the regulatory timeline would be."*
+
+That starts a **new round**, and it is not a re-run. The problem is **re-diagnosed** in light of your steer (a redirection often changes what the real question *is*), research questions are generated to target the avenue you named, and the answer is written to address it — changing the recommendation where the new evidence warrants, rather than defending the previous one.
+
+What makes rounds cheap: **evidence already gathered is carried forward**, so a follow-up builds on what's known instead of paying to rediscover it. This round's findings get first call on the evidence budget, though — otherwise well-scored older evidence would crowd out the very thing you asked for. **Earlier rounds are kept**, not overwritten: switch between them, compare, and download any one of them. A steer that turns out to be a dead end costs you nothing.
+
 Everything below is how the project builds the context and evidence the Solution stands on. There is no AI org chart — projects spin up **ephemeral subagents** (a persona for one task, gone when done), so it all works with zero setup. LM Studio is a first-class inference engine; any OpenAI-style API works too.
 
 ### Sourcing you can check

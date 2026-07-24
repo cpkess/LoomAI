@@ -1,7 +1,11 @@
+import { eq } from "drizzle-orm";
+
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { FORMAT_META, renderDeliverable, type DeliverableFormat } from "@/lib/export/render";
 import { renderPptx } from "@/lib/export/pptx";
 import { renderXlsx } from "@/lib/export/xlsx";
+import { db } from "@/lib/db";
+import { solutions } from "@/lib/db/schema";
 import { ownedProject } from "@/lib/projects/chat";
 import { evidenceSchema, latestSolution, problemSchema, researchRecordSchema, solutionModelSchema } from "@/lib/projects/solution";
 import { solutionToDeck, solutionToMarkdown, solutionToOnePager, solutionToWorkbook } from "@/lib/projects/solutionRender";
@@ -21,7 +25,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ orgSlug:
     const ctx = await requireOrg(orgSlug, "member");
     if (!(await ownedProject(ctx.org.id, projectId))) return Response.json({ error: "Project not found" }, { status: 404 });
 
-    const s = await latestSolution(projectId);
+    // Download the round being viewed, not just the newest one.
+    const requestedId = new URL(req.url).searchParams.get("solutionId");
+    const s = requestedId
+      ? (await db.query.solutions.findFirst({ where: eq(solutions.id, requestedId) })) ?? null
+      : await latestSolution(projectId);
+    if (s && (s.projectId !== projectId || s.organizationId !== ctx.org.id)) {
+      return Response.json({ error: "Solution not found" }, { status: 404 });
+    }
     if (!s || !s.model) return Response.json({ error: "No completed solution yet" }, { status: 409 });
     const problem = s.problem ? problemSchema.safeParse(s.problem).data ?? null : null;
     const model = solutionModelSchema.parse(s.model);
