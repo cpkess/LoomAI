@@ -1,6 +1,14 @@
 import { errorResponse, requireOrg } from "@/lib/auth/authorize";
 import { ownedProject } from "@/lib/projects/chat";
-import { evidenceSchema, latestSolution, problemSchema, solutionModelSchema, startSolution, verificationSchema } from "@/lib/projects/solution";
+import {
+  evidenceSchema,
+  latestSolution,
+  problemSchema,
+  researchRecordSchema,
+  solutionModelSchema,
+  startSolution,
+  verificationSchema,
+} from "@/lib/projects/solution";
 
 // GET → the project's latest Solution (status + diagnosed problem + the single
 // answer + its verification). POST → kick off a fresh solve from the current
@@ -24,6 +32,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ orgSlug
         problem: s.problem ? problemSchema.safeParse(s.problem).data ?? null : null,
         model: s.model ? solutionModelSchema.safeParse(s.model).data ?? null : null,
         evidence: s.evidence ? evidenceSchema.safeParse(s.evidence).data ?? [] : [],
+        research: s.research ? researchRecordSchema.safeParse(s.research).data ?? null : null,
         verification: s.verification ? verificationSchema.safeParse(s.verification).data ?? null : null,
         updatedAt: s.updatedAt,
       },

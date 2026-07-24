@@ -31,6 +31,9 @@ export const solutions = pgTable("solutions", {
   model: jsonb("model"),
   // Gathered, citable evidence (from project knowledge/sources + optional web).
   evidence: jsonb("evidence"),
+  // What the research phase did: the questions it decomposed the problem into,
+  // how much each turned up, rounds run, per-channel counts, citation coverage.
+  research: jsonb("research"),
   // Whether this run gathers and cites evidence before solving.
   researchMode: boolean("research_mode").notNull().default(true),
   // The self-check: does this actually solve the diagnosed problem?

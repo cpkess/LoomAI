@@ -4,8 +4,8 @@ import { evidenceSchema, solutionModelSchema, type Problem } from "./solution";
 import { solutionToDeck, solutionToMarkdown, solutionToOnePager, solutionToWorkbook } from "./solutionRender";
 
 const evidence = evidenceSchema.parse([
-  { id: "E1", snippet: "EU SaaS grew 22% in 2024", source: "https://example.com/eu", kind: "web" },
-  { id: "E2", snippet: "40 leads in pipeline", source: "pipeline.xlsx", kind: "document", ref: "doc-1" },
+  { id: "E1", snippet: "EU SaaS grew 22% in 2024", source: "EU SaaS Market Report", kind: "web", url: "https://example.com/eu", score: 0.72 },
+  { id: "E2", snippet: "40 leads in pipeline", source: "pipeline.xlsx", kind: "document", ref: "doc-1", score: 0.88 },
 ]);
 
 const problem: Problem = {
@@ -62,14 +62,18 @@ describe("solution renderers — one source, consistent formats", () => {
     const md = solutionToMarkdown(problem, model, evidence);
     expect(md).toContain("## Sources");
     expect(md).toContain("**[E1]**");
-    expect(md).toContain("https://example.com/eu");
+    // Web sources link out, so a reader can check the citation themselves.
+    expect(md).toContain("[EU SaaS Market Report](https://example.com/eu)");
 
     const deck = solutionToDeck(problem, model, evidence);
     expect(deck.slides.map((s) => s.title)).toContain("Sources");
+    expect(deck.slides.find((s) => s.title === "Sources")!.bullets[0]).toContain("https://example.com/eu");
 
     const wb = solutionToWorkbook(model, evidence);
     const sources = wb.sheets.find((s) => s.name === "Sources")!;
-    expect(sources.rows[0]).toEqual(["E1", "https://example.com/eu", "web", "EU SaaS grew 22% in 2024"]);
+    expect(sources.rows[0]).toEqual(["E1", "EU SaaS Market Report", "web", "https://example.com/eu", "EU SaaS grew 22% in 2024"]);
+    // Local evidence has no URL — the column is present but empty.
+    expect(sources.rows[1]).toEqual(["E2", "pipeline.xlsx", "document", "", "40 leads in pipeline"]);
   });
 
   it("omits Sources when there's no evidence", () => {

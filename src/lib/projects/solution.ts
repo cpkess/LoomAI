@@ -7,10 +7,19 @@ import { organizations, projects, solutions, type Organization, type Project, ty
 
 import { enqueueSolution } from "@/lib/agents/engine";
 import { extractJson } from "@/lib/agents/json";
-import { subagentForRole } from "@/lib/agents/roles";
-import { systemReply, webResearchEnabled } from "@/lib/agents/subagent";
-import { retrieveContext } from "@/lib/rag/retrieve";
-import { embedOne, findRelatedItems, projectCollectionId, recordProjectEvent, retrieveProjectContext } from "./knowledge";
+import { systemReply } from "@/lib/agents/subagent";
+import { recordProjectEvent, retrieveProjectContext } from "./knowledge";
+import {
+  citationStats,
+  deepResearch,
+  evidenceBlock,
+  evidenceSchema,
+  researchRecordSchema,
+  stripUnknownCitations,
+  type CitationStats,
+  type EvidenceItem,
+  type ResearchRecord,
+} from "./research";
 import { parseCharter, scopeBlock } from "./scoping";
 
 // The Solution engine — the spine of the app. From a project's brief + scope +
@@ -52,23 +61,9 @@ export const verificationSchema = z.object({
 });
 export type Verification = z.infer<typeof verificationSchema>;
 
-// Citable evidence the solution stands on. Each item gets an [E#] tag the solver
-// references, so every claim is traceable to a source (a document, a project
-// knowledge item, or a web page).
-export const evidenceSchema = z.array(
-  z.object({
-    id: z.string().max(8),
-    snippet: z.string().max(1200),
-    source: z.string().max(300),
-    kind: z.string().max(40),
-    ref: z.string().nullable().optional(),
-  })
-);
-export type EvidenceItem = z.infer<typeof evidenceSchema>[number];
-
-const webEvidenceSchema = z.object({
-  evidence: z.array(z.object({ claim: z.string().max(600), source: z.string().max(400).default("") })).max(8).default([]),
-});
+// Citable evidence the solution stands on lives with the research engine that
+// produces it; re-exported here because it's part of the Solution's public shape.
+export { evidenceSchema, researchRecordSchema, type EvidenceItem, type ResearchRecord };
 
 const DIAGNOSER = "You are a razor-sharp strategy consultant. You cut through a brief to the REAL problem that must be solved — which is often not the question as asked — and define exactly what a good answer must achieve. You are precise and decisive.";
 const SOLVER = "You are a principal consultant producing the definitive answer to a problem. You synthesize evidence into one coherent, decision-ready solution: a clear recommendation, the findings and analysis that support it, the risks, and a concrete plan. You are specific and never hand-wave.";
@@ -158,68 +153,67 @@ async function diagnose(s: Solution, project: Project, org: Organization): Promi
 }
 
 /**
- * Gather citable evidence for the diagnosed problem: excerpts from the project's
- * own documents, its knowledge items, and — when web research is enabled — a few
- * web findings. Each becomes an [E#] the solver can cite, so every claim is
- * traceable.
+ * The evidence phase. Decomposes the diagnosed problem into research questions
+ * and works each one across the project's documents, its structured knowledge,
+ * and the live web — chasing the questions that come back thin — then ranks the
+ * result into the [E#] set the solver must cite. See ./research.
  */
 async function research(s: Solution, project: Project, org: Organization): Promise<void> {
   const problem = problemSchema.parse(s.problem ?? {});
-  const query = problem.coreProblem;
-  const raw: Omit<EvidenceItem, "id">[] = [];
+  const { evidence, record } = await deepResearch({
+    org,
+    projectId: project.id,
+    coreProblem: problem.coreProblem,
+    criteria: problem.solutionCriteria,
+    scope: scopeBlock(parseCharter(project.charter), project.description),
+  });
 
-  // 1. Document excerpts from the project's own sources.
-  try {
-    const collectionId = await projectCollectionId(project.id, org.id);
-    const retrieved = await retrieveContext([collectionId], query);
-    for (const src of retrieved.sources.slice(0, 8)) {
-      raw.push({ snippet: src.snippet, source: src.filename, kind: "document", ref: src.documentId });
-    }
-  } catch (err) {
-    console.error("evidence: document retrieval failed", err);
-  }
+  await db.update(solutions).set({ evidence, research: record, status: "solving", updatedAt: new Date() }).where(eq(solutions.id, s.id));
+  await recordProjectEvent(
+    project.id,
+    "solution_researched",
+    `Researched ${record.questions.length} question${record.questions.length === 1 ? "" : "s"} over ${record.rounds} round${record.rounds === 1 ? "" : "s"} — ${evidence.length} sources (${record.counts.document} document, ${record.counts.knowledge} knowledge, ${record.counts.web} web)`,
+    { type: "solution", id: s.id }
+  );
+}
 
-  // 2. The project's structured knowledge.
-  try {
-    const emb = await embedOne(query);
-    if (emb) {
-      const related = await findRelatedItems(project.id, emb.vector, emb.modelId, 8);
-      for (const r of related) {
-        if (r.item.status === "superseded") continue;
-        raw.push({ snippet: r.item.content, source: "project knowledge", kind: r.item.type, ref: r.item.id });
-      }
-    }
-  } catch (err) {
-    console.error("evidence: knowledge retrieval failed", err);
-  }
+/**
+ * Every claim the solution asserts, as text. Used to check citation grounding —
+ * these are the statements that must rest on evidence.
+ */
+function materialClaims(model: SolutionModel): string[] {
+  return [
+    ...model.findings.map((f) => `${f.title} ${f.detail}`),
+    ...model.analysis.map((a) => `${a.point} ${a.evidence}`),
+    ...model.metrics.map((m) => `${m.name} ${m.value} ${m.note}`),
+  ].filter((c) => c.trim());
+}
 
-  // 3. Web findings, when the org has web research on.
-  if (webResearchEnabled(org)) {
-    try {
-      const persona = subagentForRole("researcher").persona;
-      const text = await systemReply(
-        org,
-        [
-          `Research the web for concrete, current evidence relevant to this problem: "${query}".`,
-          "Return only well-sourced facts, each with the URL it came from. Do not invent sources.",
-          'Respond with JSON only: {"evidence":[{"claim":"...","source":"<url>"}]}',
-        ].join("\n"),
-        { persona, gen: generation.extract, withTools: true }
-      );
-      const parsed = webEvidenceSchema.safeParse(extractJson(text));
-      if (parsed.success) {
-        for (const e of parsed.data.evidence) if (e.claim.trim()) raw.push({ snippet: e.claim, source: e.source || "web", kind: "web", ref: null });
-      }
-    } catch (err) {
-      console.error("evidence: web research failed", err);
-    }
-  }
+/**
+ * Keep the model honest about its citations: drop [E#] tags that point at
+ * evidence that doesn't exist, and measure how much of the solution is actually
+ * grounded. Both results go to the verifier — a hallucinated tag is a
+ * correctness failure, and an uncited claim is a gap.
+ */
+function enforceCitations(model: SolutionModel, evidence: EvidenceItem[]): { model: SolutionModel; stats: CitationStats } {
+  const known = new Set(evidence.map((e) => e.id));
+  const stats = citationStats(materialClaims(model), known);
+  if (evidence.length === 0) return { model, stats };
 
-  // Number and cap.
-  const evidence: EvidenceItem[] = raw.slice(0, 14).map((e, i) => ({ ...e, id: `E${i + 1}` }));
-
-  await db.update(solutions).set({ evidence, status: "solving", updatedAt: new Date() }).where(eq(solutions.id, s.id));
-  await recordProjectEvent(project.id, "solution_researched", `Gathered ${evidence.length} pieces of evidence`, { type: "solution", id: s.id });
+  const clean = (text: string) => stripUnknownCitations(text, known);
+  return {
+    model: {
+      ...model,
+      executiveSummary: clean(model.executiveSummary),
+      recommendation: clean(model.recommendation),
+      findings: model.findings.map((f) => ({ title: clean(f.title), detail: clean(f.detail) })),
+      analysis: model.analysis.map((a) => ({ point: clean(a.point), evidence: clean(a.evidence) })),
+      risks: model.risks.map((r) => ({ risk: clean(r.risk), mitigation: clean(r.mitigation) })),
+      plan: model.plan.map((p) => ({ ...p, step: clean(p.step), detail: clean(p.detail) })),
+      metrics: model.metrics.map((m) => ({ ...m, note: clean(m.note) })),
+    },
+    stats,
+  };
 }
 
 async function solve(s: Solution, project: Project, org: Organization): Promise<void> {
@@ -228,13 +222,7 @@ async function solve(s: Solution, project: Project, org: Organization): Promise<
   const evidence = s.evidence ? evidenceSchema.safeParse(s.evidence).data ?? [] : [];
   const isRevision = s.status === "revising";
   const context = evidence.length === 0 ? await retrieveProjectContext({ id: project.id, organizationId: org.id }, problem.coreProblem).catch(() => "") : "";
-
-  const evidenceBlock = evidence.length
-    ? [
-        "Evidence — cite the pieces that support each claim using their [E#] tag (in findings, analysis points, and metric notes). Do not invent evidence or sources:",
-        ...evidence.map((e) => `[${e.id}] (${e.source}) ${e.snippet}`),
-      ].join("\n")
-    : "";
+  const block = evidenceBlock(evidence);
 
   const text = await runRole(
     org,
@@ -244,12 +232,14 @@ async function solve(s: Solution, project: Project, org: Organization): Promise<
       `Core problem: ${problem.coreProblem}`,
       problem.decision ? `Key decision: ${problem.decision}` : "",
       problem.solutionCriteria.length ? `A good solution must: ${problem.solutionCriteria.join("; ")}` : "",
-      evidenceBlock ? `\n${evidenceBlock}\n` : context ? `\nEvidence available:\n${context}\n` : "",
+      block ? `\n${block}\n` : context ? `\nEvidence available:\n${context}\n` : "",
       isRevision && verification?.success && verification.data.fixes.length
         ? `Your previous attempt fell short. Fix these gaps:\n${verification.data.fixes.map((f) => `- ${f}`).join("\n")}`
         : "",
       "Deliver ONE coherent, decision-ready answer: a title, an executive summary, a single clear recommendation, the findings and analysis that support it, the key risks with mitigations, a concrete plan (steps, and owners where sensible), and any quantitative metrics that matter.",
-      evidence.length ? "Cite the evidence behind each finding, analysis point, and metric using its [E#] tag." : "",
+      evidence.length
+        ? `Every finding, analysis point, and metric must end with the [E#] tag(s) it rests on — only tags from E1–E${evidence.length}. If nothing in the evidence supports a point, leave the point out rather than asserting it uncited.`
+        : "",
       'Respond with JSON only: {"title":"...","executiveSummary":"...","recommendation":"...","findings":[{"title":"...","detail":"..."}],"analysis":[{"point":"...","evidence":"..."}],"risks":[{"risk":"...","mitigation":"..."}],"plan":[{"step":"...","detail":"...","owner":"..."}],"metrics":[{"name":"...","value":"...","note":"..."}]}',
     ]
       .filter(Boolean)
@@ -257,15 +247,36 @@ async function solve(s: Solution, project: Project, org: Organization): Promise<
     generation.work
   );
   const parsed = solutionModelSchema.safeParse(extractJson(text));
-  const model: SolutionModel = parsed.success ? parsed.data : { ...solutionModelSchema.parse({}), title: project.title, executiveSummary: problem.coreProblem };
+  const drafted: SolutionModel = parsed.success ? parsed.data : { ...solutionModelSchema.parse({}), title: project.title, executiveSummary: problem.coreProblem };
 
-  await db.update(solutions).set({ model, status: "verifying", updatedAt: new Date() }).where(eq(solutions.id, s.id));
-  await recordProjectEvent(project.id, isRevision ? "solution_revised" : "solution_drafted", `${isRevision ? "Revised" : "Drafted"} the solution`, { type: "solution", id: s.id });
+  // Citations are checked, not trusted: invented [E#] tags are removed and the
+  // grounding rate is recorded for the verifier.
+  const { model, stats } = enforceCitations(drafted, evidence);
+  const record = s.research ? researchRecordSchema.safeParse(s.research).data ?? null : null;
+  const research = record ? { ...record, citation: stats } : null;
+
+  await db
+    .update(solutions)
+    .set({ model, ...(research ? { research } : {}), status: "verifying", updatedAt: new Date() })
+    .where(eq(solutions.id, s.id));
+  await recordProjectEvent(
+    project.id,
+    isRevision ? "solution_revised" : "solution_drafted",
+    `${isRevision ? "Revised" : "Drafted"} the solution${evidence.length ? ` — ${stats.coverage}% of claims cited` : ""}`,
+    { type: "solution", id: s.id }
+  );
 }
 
 async function verify(s: Solution, project: Project, org: Organization): Promise<boolean> {
   const problem = problemSchema.parse(s.problem ?? {});
   const model = solutionModelSchema.parse(s.model ?? {});
+  const evidence = s.evidence ? evidenceSchema.safeParse(s.evidence).data ?? [] : [];
+  const record = s.research ? researchRecordSchema.safeParse(s.research).data ?? null : null;
+  const stats = record?.citation ?? null;
+
+  // Questions the research phase couldn't answer are known blind spots — the
+  // reviewer should weigh the solution knowing where it's standing on nothing.
+  const unanswered = (record?.questions ?? []).filter((q) => q.found === 0).map((q) => q.question);
 
   const text = await runRole(
     org,
@@ -278,8 +289,17 @@ async function verify(s: Solution, project: Project, org: Organization): Promise
       "Solution:",
       `Recommendation: ${model.recommendation}`,
       `Executive summary: ${model.executiveSummary}`,
-      model.findings.length ? `Findings: ${model.findings.map((f) => f.title).join("; ")}` : "",
+      model.findings.length ? `Findings: ${model.findings.map((f) => `${f.title} — ${f.detail}`).join("\n")}` : "",
+      model.analysis.length ? `Analysis: ${model.analysis.map((a) => a.point).join("; ")}` : "",
       model.plan.length ? `Plan: ${model.plan.map((p) => p.step).join("; ")}` : "",
+      evidence.length ? `\nThe evidence available to the author was:\n${evidence.map((e) => `[${e.id}] (${e.source}) ${e.snippet}`).join("\n")}` : "",
+      stats
+        ? `\nGrounding: ${stats.cited} of ${stats.claims} claims carry a citation (${stats.coverage}%).${stats.unknownRefs.length ? ` The author also referenced non-existent evidence: ${stats.unknownRefs.join(", ")}.` : ""}`
+        : "",
+      unanswered.length ? `\nResearch could not answer: ${unanswered.join("; ")}` : "",
+      evidence.length
+        ? "\nHold it to the evidence: a material claim with no citation, or one the cited evidence does not actually support, is a gap. Say so plainly."
+        : "",
       "",
       'Respond with JSON only: {"solvesProblem":true|false,"score":0-100,"gaps":["..."],"fixes":["..."]}',
     ]
@@ -289,6 +309,14 @@ async function verify(s: Solution, project: Project, org: Organization): Promise
   );
   const parsed = verificationSchema.safeParse(extractJson(text));
   const verification: Verification = parsed.success ? parsed.data : { solvesProblem: true, score: 70, gaps: [], fixes: [] };
+
+  // A solution that cites evidence that doesn't exist has failed on its face,
+  // whatever the reviewer thought of the prose.
+  if (stats && stats.unknownRefs.length > 0 && verification.solvesProblem) {
+    verification.solvesProblem = false;
+    verification.gaps = [...verification.gaps, `Cited evidence that does not exist: ${stats.unknownRefs.join(", ")}`].slice(0, 10);
+    verification.fixes = [...verification.fixes, "Cite only the listed [E#] evidence, and drop any claim it does not support"].slice(0, 10);
+  }
 
   const cap = s.iteration >= MAX_ITERATIONS;
   const done = verification.solvesProblem || cap;

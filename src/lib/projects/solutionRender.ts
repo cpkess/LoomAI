@@ -45,7 +45,14 @@ export function solutionToMarkdown(problem: Problem | null, model: SolutionModel
   }
 
   if (evidence.length) {
-    out.push(`## Sources\n\n${evidence.map((e) => `- **[${e.id}]** *(${e.source})* — ${e.snippet}`).join("\n")}`);
+    out.push(
+      `## Sources\n\n${evidence
+        .map((e) => {
+          const label = e.url ? `[${e.source}](${e.url})` : e.source;
+          return `- **[${e.id}]** *(${label})* — ${e.snippet}`;
+        })
+        .join("\n")}`
+    );
   }
 
   return out.join("\n\n");
@@ -96,7 +103,7 @@ export function solutionToDeck(problem: Problem | null, model: SolutionModel, ev
     slides.push({ title: "Key metrics", bullets: model.metrics.map((m) => `${m.name}: ${m.value}`) });
   }
   if (evidence.length) {
-    slides.push({ title: "Sources", bullets: evidence.map((e) => `[${e.id}] ${e.source}`) });
+    slides.push({ title: "Sources", bullets: evidence.map((e) => `[${e.id}] ${e.source}${e.url ? ` — ${e.url}` : ""}`) });
   }
 
   return { title: model.title || "Solution", subtitle: model.recommendation ? truncate(model.recommendation, 140) : problem?.coreProblem, slides };
@@ -119,7 +126,11 @@ export function solutionToWorkbook(model: SolutionModel, evidence: EvidenceItem[
     sheets.push({ name: "Findings", columns: ["Finding", "Detail"], rows: model.findings.map((f) => [f.title, f.detail]) });
   }
   if (evidence.length) {
-    sheets.push({ name: "Sources", columns: ["ID", "Source", "Kind", "Evidence"], rows: evidence.map((e) => [e.id, e.source, e.kind, e.snippet]) });
+    sheets.push({
+      name: "Sources",
+      columns: ["ID", "Source", "Kind", "URL", "Evidence"],
+      rows: evidence.map((e) => [e.id, e.source, e.kind, e.url ?? "", e.snippet]),
+    });
   }
   if (sheets.length === 0) sheets.push({ name: "Summary", columns: ["Item"], rows: [[model.title || "Solution"]] });
 

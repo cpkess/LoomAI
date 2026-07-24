@@ -6,12 +6,22 @@ LoomAI turns a rough brief into a complete, consistent, decision-ready output pa
 
 ### The one flow: brief → problem → solution → package
 1. **Diagnose** — a strategist subagent finds the core problem to solve (often not the literal ask), the decision to make, and what "solved" looks like.
-2. **Research** *(optional, on by default)* — a researcher gathers citable **evidence** for the problem: excerpts from the project's own documents, its structured knowledge, and — when web research is enabled — a few web findings. Each becomes a numbered `[E#]` source.
+2. **Deep research** *(optional, on by default)* — the problem is **broken into specific research questions**, and each is worked across three channels: the project's own documents (scored chunk retrieval), its structured knowledge (attributed to the source it was extracted from), and the **live web**. Questions that come back thin get **sharper follow-up queries and another round**. Findings are deduped, ranked with per-channel quotas, and numbered `[E#]`. See [Sourcing you can check](#sourcing-you-can-check).
 3. **Solve** — one structured **Solution** is produced: executive summary, a single clear recommendation, the findings and analysis behind it, risks with mitigations, a concrete plan, and the numbers — with every claim **cited `[E#]`** back to the evidence.
-4. **Verify** — a reviewer checks the answer against the diagnosed problem and its success criteria, and revises until it passes (or hits the iteration cap).
+4. **Verify** — a reviewer checks the answer against the diagnosed problem and its success criteria *and against its evidence*: citations are validated (invented `[E#]` refs are stripped and fail the check), grounding is measured, and unanswered research questions are surfaced as known blind spots. It revises until it passes (or hits the iteration cap).
 5. **Render** — that one Solution downloads as a **Report** (PDF/Word/HTML/Markdown), a **Deck** (`.pptx`), a **Model** (`.xlsx`), and a **One-pager** — every format carries the same recommendation *and* a **Sources** section, so they're consistent and auditable. Change the brief, re-solve, and every format updates in lockstep.
 
 Everything below is how the project builds the context and evidence the Solution stands on. There is no AI org chart — projects spin up **ephemeral subagents** (a persona for one task, gone when done), so it all works with zero setup. LM Studio is a first-class inference engine; any OpenAI-style API works too.
+
+### Sourcing you can check
+
+A citation is only worth something if you can follow it. Three rules make that true:
+
+- **The model never supplies a URL.** LoomAI runs the search itself, fetches the actual pages, and asks the model only to extract claims *from text it was handed*. The URL and title come from the fetch, so a web citation always points at a page that exists and really said it. If a page won't load, its real search-result snippet is kept (scored lower) rather than the source being dropped.
+- **Local evidence names its real origin.** Knowledge items cite the document or note they were extracted from — *"Q3 board deck (project knowledge)"* — not a generic label, resolved through the knowledge item's recorded provenance.
+- **Citations are validated, not trusted.** After the solve, `[E#]` tags are checked against the evidence that actually exists: invented references are stripped from the output, grounding is measured (*"60% of claims cited"*), and a solution that cited nonexistent evidence **fails verification and goes back for revision** regardless of how good the prose read.
+
+The Solution tab shows the whole research record — each question, how many sources it turned up, which ones came back empty, per-channel counts, and the citation coverage — so you can see where the answer is well-founded and where it's thin. Tunable via `LOOMAI_RESEARCH_ROUNDS`, `LOOMAI_RESEARCH_QUESTIONS`, `LOOMAI_RESEARCH_MAX_EVIDENCE`, `LOOMAI_RESEARCH_WEB_PAGES`, `LOOMAI_RESEARCH_CONCURRENCY`.
 
 ## Three pillars (the machinery behind the Solution)
 
@@ -89,7 +99,7 @@ The Docker image ships as a self-updating checkout, so you don't have to manuall
 ```
 src/lib/ai         provider plugins (lmstudio, ollama, anthropic, openai-compatible) + registry
 src/lib/agents     ephemeral subagents (systemReply grounded generation), specialist role personas, the work queue
-src/lib/projects   Solution engine (diagnose → solve → verify) + one-source multi-format renderers; Living Projects (scoping loop + work plan, knowledge graph, event-driven analysis, staleness, intelligence, briefing, chat) + multi-stage deliverable engine + quality gates
+src/lib/projects   Solution engine (diagnose → research → solve → verify) + deep research (question decomposition, multi-round multi-channel gathering, verifiable web sourcing, ranking, citation validation) + one-source multi-format renderers; Living Projects (scoping loop + work plan, knowledge graph, event-driven analysis, staleness, intelligence, briefing, chat) + multi-stage deliverable engine + quality gates
 src/lib/research   free web tools (DuckDuckGo search, fetch+links, headless-browser navigation)
 src/lib/rag        parse (pdf/docx/pptx/xlsx/zip/images/transcripts) → chunk → embed → pgvector retrieve, in-process ingestion queue
 src/lib/export     render deliverables → PDF/DOCX/HTML/Markdown, native PPTX (pptxgenjs) + XLSX (exceljs)

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, FileText, Loader2, Presentation, Sparkles, Target } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, FileText, Loader2, Presentation, Search, Sparkles, Target } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,15 @@ interface Evidence {
   snippet: string;
   source: string;
   kind: string;
+  url?: string | null;
+  score?: number;
+  question?: string;
+}
+interface ResearchRecord {
+  questions: { question: string; why: string; found: number }[];
+  rounds: number;
+  counts: { document: number; knowledge: number; web: number };
+  citation: { claims: number; cited: number; coverage: number; unknownRefs: string[] } | null;
 }
 interface SolutionState {
   id: string;
@@ -45,12 +54,13 @@ interface SolutionState {
   problem: Problem | null;
   model: SolutionModel | null;
   evidence: Evidence[];
+  research: ResearchRecord | null;
   verification: Verification | null;
 }
 
 const STATUS_LABEL: Record<string, string> = {
   diagnosing: "Diagnosing the real problem…",
-  researching: "Researching & gathering evidence…",
+  researching: "Researching — decomposing the problem and chasing sources…",
   solving: "Producing the solution…",
   verifying: "Checking it solves the problem…",
   revising: "Closing gaps…",
@@ -109,7 +119,7 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
           </div>
           <label className="flex items-center gap-2 text-sm">
             <Switch checked={research} onCheckedChange={setResearch} />
-            <span>Research mode — gather &amp; cite evidence first</span>
+            <span>Deep research — break the problem into questions and source each one first</span>
           </label>
           <Button onClick={solve} disabled={starting}>
             {starting ? <Loader2 className="animate-spin" /> : <Sparkles />}
@@ -158,8 +168,58 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
         <Loading label={STATUS_LABEL[sol.status]} />
       ) : null}
 
+      {sol.research && <ResearchCard research={sol.research} />}
+
       {sol.evidence.length > 0 && <EvidenceCard evidence={sol.evidence} />}
     </div>
+  );
+}
+
+function ResearchCard({ research }: { research: ResearchRecord }) {
+  const { counts, citation } = research;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Search className="size-4 text-muted-foreground" />
+          Research
+        </CardTitle>
+        <CardDescription>
+          The problem was broken into questions and each was worked across your documents, the project&apos;s knowledge, and the
+          web — over {research.rounds} round{research.rounds === 1 ? "" : "s"}, chasing whatever came back thin.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3 text-sm">
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <Badge variant="secondary">{counts.document} document</Badge>
+          <Badge variant="secondary">{counts.knowledge} knowledge</Badge>
+          <Badge variant="secondary">{counts.web} web</Badge>
+          {citation && (
+            <Badge variant={citation.coverage >= 80 ? "success" : citation.coverage >= 50 ? "warning" : "destructive"}>
+              {citation.coverage}% of claims cited
+            </Badge>
+          )}
+          {citation && citation.unknownRefs.length > 0 && <Badge variant="destructive">invented refs: {citation.unknownRefs.join(", ")}</Badge>}
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {research.questions.map((q, i) => (
+            <div key={i} className="flex items-start gap-2">
+              {q.found > 0 ? (
+                <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-success" />
+              ) : (
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+              )}
+              <div className="min-w-0 flex-1">
+                <span>{q.question}</span>
+                <span className="ml-1.5 text-xs text-muted-foreground">
+                  {q.found > 0 ? `${q.found} source${q.found === 1 ? "" : "s"}` : "nothing found"}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -179,7 +239,18 @@ function EvidenceCard({ evidence }: { evidence: Evidence[] }) {
             <Badge variant="secondary" className="h-fit shrink-0">{e.id}</Badge>
             <div className="min-w-0">
               <span>{e.snippet}</span>
-              <span className="ml-1 text-xs text-muted-foreground">({e.source})</span>
+              <span className="ml-1 text-xs text-muted-foreground">
+                (
+                {e.url ? (
+                  <a href={e.url} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">
+                    {e.source}
+                  </a>
+                ) : (
+                  e.source
+                )}
+                )
+              </span>
+              <Badge variant="outline" className="ml-1.5 text-[10px]">{e.kind}</Badge>
             </div>
           </div>
         ))}
