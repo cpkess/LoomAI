@@ -7,7 +7,7 @@ LoomAI turns a rough brief into a complete, consistent, decision-ready output pa
 ### The one flow: brief → problem → solution → package
 1. **Diagnose** — a strategist subagent finds the core problem to solve (often not the literal ask), the decision to make, and what "solved" looks like.
 2. **Deep research** *(optional, on by default)* — the problem is **broken into specific research questions**, and each is worked across three channels: the project's own documents (scored chunk retrieval), its structured knowledge (attributed to the source it was extracted from), and the **live web**. Questions that come back thin get **sharper follow-up queries and another round**. Findings are deduped, ranked with per-channel quotas, and numbered `[E#]`. See [Sourcing you can check](#sourcing-you-can-check).
-3. **Solve** — one structured **Solution** is produced: executive summary, a single clear recommendation, the findings and analysis behind it, risks with mitigations, a concrete plan, and the numbers — with every claim **cited `[E#]`** back to the evidence.
+3. **Solve** — one structured **Solution** is produced in three stages, deliberately in this order: what the **evidence supports** (findings and analysis), then the **recommendation derived from it**, then the **risks, plan and metrics** that follow. Writing the conclusion in the same breath as the findings is what lets a model assert a recommendation its own evidence doesn't support; sequencing forces derivation. Every claim is **cited `[E#]`**.
 4. **Verify** — a reviewer checks the answer against the diagnosed problem and its success criteria *and against its evidence*: citations are validated (invented `[E#]` refs are stripped and fail the check), grounding is measured, and unanswered research questions are surfaced as known blind spots. It revises until it passes (or hits the iteration cap).
 5. **Render** — that one Solution downloads as a **Report** (PDF/Word/HTML/Markdown), a **Deck** (`.pptx`), a **Model** (`.xlsx`), and a **One-pager** — every format carries the same recommendation *and* a **Sources** section, so they're consistent and auditable. Change the brief, re-solve, and every format updates in lockstep.
 
@@ -22,6 +22,9 @@ A citation is only worth something if you can follow it. These rules make that t
 - **Citations are validated, not trusted.** After the solve, `[E#]` tags are checked against the evidence that actually exists: invented references are stripped from the output, grounding is measured (*"60% of claims cited"*), and a solution that cited nonexistent evidence **fails verification and goes back for revision** regardless of how good the prose read.
 - **Obstacles and gates are treated differently.** Cookie/consent banners and pop-up overlays are dismissed automatically so the content behind them can be read — the same click a person makes on arrival. **Access controls are not touched:** a CAPTCHA, bot wall, login, or paywall is *detected and reported*, never solved or worked around. The source is recorded as unreachable, nothing is cited from it, and the run moves on without retrying. That way "no evidence exists" is never confused with "we couldn't get in" — and the blocked sources are listed in the UI *and in the exported report*, so a reader knows exactly what the answer does and doesn't cover. If you need what's behind a wall, the answer is credentials or an API, not a bypass.
 - **LoomAI is a polite client.** It honours `robots.txt` (including `Crawl-delay`), identifies itself truthfully in its User-Agent, and paces itself per host so research never hammers a site it's about to cite.
+- **The brief is not evidence.** A project's own prompt is filed as its first source, so it used to be retrievable — and citable — as support for its own answer. It's now excluded from the evidence pool: citing the question as proof of the answer is circular.
+- **Retrieval is hybrid, and evidence clears a higher bar.** Vector similarity is fused with postgres full-text ranking (reciprocal rank fusion), because exact terms — product names, figures, acronyms — are what research questions actually turn on and pure embeddings miss them. Evidence must then clear `LOOMAI_EVIDENCE_MIN_SIM` (0.45, versus 0.2 for chat retrieval): a barely-related chunk carrying an `[E#]` tag looks grounded while adding nothing, which is worse than no evidence at all.
+- **Failures are loud.** Structured steps retry once with the parser's complaint fed back, then **fail the run**. They no longer fall back to an empty solution or — worse — a verification that defaults to "passes" for a review that never happened. A visible failure is recoverable; silent bad output isn't.
 
 The Solution tab shows the whole research record — each question, how many sources it turned up, which ones came back empty, per-channel counts, and the citation coverage — so you can see where the answer is well-founded and where it's thin. Tunable via `LOOMAI_RESEARCH_ROUNDS`, `LOOMAI_RESEARCH_QUESTIONS`, `LOOMAI_RESEARCH_MAX_EVIDENCE`, `LOOMAI_RESEARCH_WEB_PAGES`, `LOOMAI_RESEARCH_CONCURRENCY`.
 
@@ -127,6 +130,20 @@ Design rules the codebase follows:
 | `npm run db:generate` | generate a migration after schema changes |
 | `npm run db:migrate` | apply migrations |
 | `npm run db:seed` | seed the platform admin + demo org |
+| `npm run eval` | measure Solution quality **and run-to-run variance** (see below) |
+| `npm run web:check` | check the live web path: search, fetch, consent banners, gate detection |
+
+### Measuring quality, not vibes
+
+"The output is inconsistent" is unfalsifiable until you run the same brief repeatedly and look at the spread, so `npm run eval` does exactly that: a few fixture briefs with a fixed corpus, run N times each against a live server, reporting the **mean and standard deviation** of citation coverage, verifier score, and evidence gathered — plus completion rate, unanswered research questions, and any invented citations.
+
+```
+npm run eval -- --repeat 5 --json eval.json
+```
+
+The ± figures are the point. A good average with a wide spread is an inconsistent system, and that's the thing to fix. Run it before and after any change to prompting, retrieval, or model choice.
+
+`npm run web:check` is the counterpart for the web path, which can only be judged against the live internet: it exercises search, plain fetch, `robots.txt` parsing, real navigation, consent-banner dismissal, and gate detection, then tells you which parts work. If a page you know shows a cookie wall reports "no overlay found", its CMP selector is missing from `CONSENT_SELECTORS` — that list is the part most likely to need topping up over time.
 
 ## Roadmap
 

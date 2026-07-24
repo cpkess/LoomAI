@@ -8,7 +8,7 @@ import { projectKnowledgeEvidence, projectSources, type Organization } from "@/l
 import { extractJson } from "@/lib/agents/json";
 import { subagentForRole } from "@/lib/agents/roles";
 import { systemReply, webResearchEnabled } from "@/lib/agents/subagent";
-import { retrieveScored } from "@/lib/rag/retrieve";
+import { retrieveHybrid } from "@/lib/rag/retrieve";
 import { navigate } from "@/lib/research/navigate";
 import { browserAvailable, fetchReadable, webSearch } from "@/lib/research/web";
 
@@ -40,6 +40,10 @@ const MAX_QUESTIONS = Number(process.env.LOOMAI_RESEARCH_QUESTIONS ?? 5);
 const MAX_EVIDENCE = Number(process.env.LOOMAI_RESEARCH_MAX_EVIDENCE ?? 18);
 const WEB_PAGES_PER_QUESTION = Number(process.env.LOOMAI_RESEARCH_WEB_PAGES ?? 3);
 const CONCURRENCY = Number(process.env.LOOMAI_RESEARCH_CONCURRENCY ?? 3);
+// Evidence is held to a higher bar than chat retrieval: a barely-related chunk
+// carrying an [E#] tag looks grounded while adding nothing, which is worse than
+// having no evidence at all.
+const EVIDENCE_MIN_SIM = Number(process.env.LOOMAI_EVIDENCE_MIN_SIM ?? 0.45);
 
 // --- Shapes -----------------------------------------------------------------
 
@@ -301,12 +305,40 @@ async function refineQueries(org: Organization, thin: ResearchQuestion[], found:
 
 // --- Step 2: the three gathering channels -----------------------------------
 
+/**
+ * Documents that restate the brief rather than inform it. The brief is the
+ * question; citing it as evidence for its own answer is circular and
+ * manufactures the appearance of support, so it's kept out of the pool.
+ */
+async function briefDocumentIds(projectId: string, description: string | null): Promise<Set<string>> {
+  const brief = (description ?? "").trim();
+  if (!brief) return new Set();
+  try {
+    const rows = await db.query.projectSources.findMany({
+      where: eq(projectSources.projectId, projectId),
+      columns: { ref: true, content: true },
+    });
+    return new Set(rows.filter((r) => r.ref && r.content.trim() === brief).map((r) => r.ref!));
+  } catch (err) {
+    console.error("research: brief lookup failed", err);
+    return new Set();
+  }
+}
+
 /** The project's own documents, as scored chunks. */
-async function gatherDocuments(projectId: string, orgId: string, question: string, query: string): Promise<Candidate[]> {
+async function gatherDocuments(
+  projectId: string,
+  orgId: string,
+  question: string,
+  query: string,
+  exclude: Set<string>
+): Promise<Candidate[]> {
   try {
     const collectionId = await projectCollectionId(projectId, orgId);
-    const hits = await retrieveScored([collectionId], query, 4);
-    return hits.map((h) => ({
+    const hits = (await retrieveHybrid([collectionId], query, 8)).filter(
+      (h) => !exclude.has(h.documentId) && h.similarity >= EVIDENCE_MIN_SIM
+    );
+    return hits.slice(0, 4).map((h) => ({
       snippet: h.content.length > 700 ? `${h.content.slice(0, 697)}…` : h.content,
       source: h.filename,
       kind: "document",
@@ -330,7 +362,7 @@ async function gatherKnowledge(projectId: string, question: string, query: strin
     const emb = await embedOne(query);
     if (!emb) return [];
     const related = await findRelatedItems(projectId, emb.vector, emb.modelId, 6);
-    const usable = related.filter((r) => r.item.status !== "superseded");
+    const usable = related.filter((r) => r.item.status !== "superseded" && r.similarity >= EVIDENCE_MIN_SIM);
     if (usable.length === 0) return [];
 
     // Resolve each item's originating source so the citation names a real thing.
@@ -513,6 +545,8 @@ export interface DeepResearchInput {
   coreProblem: string;
   criteria: string[];
   scope: string;
+  /** The project's brief, so it can be excluded from its own evidence. */
+  description?: string | null;
 }
 
 export interface DeepResearchResult {
@@ -528,6 +562,7 @@ export async function deepResearch(input: DeepResearchInput): Promise<DeepResear
   const { org, projectId, coreProblem, criteria, scope } = input;
   const questions = await planResearch(org, coreProblem, criteria, scope);
   const web = webResearchEnabled(org);
+  const excluded = await briefDocumentIds(projectId, input.description ?? null);
 
   let pool: Candidate[] = [];
   let roundsRun = 0;
@@ -541,7 +576,7 @@ export async function deepResearch(input: DeepResearchInput): Promise<DeepResear
     const gathered = await mapLimit(queue, CONCURRENCY, async ({ q, queries }) => {
       const primary = queries[0] ?? q.question;
       const [docs, knowledge, webHits] = await Promise.all([
-        gatherDocuments(projectId, org.id, q.question, primary),
+        gatherDocuments(projectId, org.id, q.question, primary, excluded),
         gatherKnowledge(projectId, q.question, primary),
         web
           ? gatherWeb(org, q.question, queries, undefined, (b) => blocked.set(b.url, b))

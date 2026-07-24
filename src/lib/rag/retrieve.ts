@@ -50,6 +50,83 @@ export interface ScoredChunk {
 }
 
 /**
+ * Reciprocal rank fusion. Vector and keyword search return scores on scales
+ * that can't be compared (cosine vs. ts_rank), so fusing on rank rather than
+ * score is the standard trick: each list contributes 1/(k+rank), and anything
+ * both lists agree on rises to the top.
+ *
+ * `k` damps the influence of top positions; 60 is the usual default.
+ */
+export function reciprocalRankFusion<T>(lists: T[][], identity: (item: T) => string, k = 60): { item: T; score: number }[] {
+  const scores = new Map<string, { item: T; score: number }>();
+  for (const list of lists) {
+    list.forEach((item, index) => {
+      const id = identity(item);
+      const existing = scores.get(id);
+      const contribution = 1 / (k + index + 1);
+      if (existing) existing.score += contribution;
+      else scores.set(id, { item, score: contribution });
+    });
+  }
+  return [...scores.values()].sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Keyword search over chunk text, using postgres full-text ranking. Vector
+ * search alone misses exact terms — product names, figures, acronyms — which is
+ * precisely what research questions turn on, so we run both and fuse.
+ */
+export async function retrieveKeyword(collectionIds: string[], query: string, k = TOP_K): Promise<ScoredChunk[]> {
+  if (collectionIds.length === 0 || !query.trim()) return [];
+  try {
+    const tsquery = sql`websearch_to_tsquery('english', ${query})`;
+    const rank = sql<number>`ts_rank(to_tsvector('english', ${documentChunks.content}), ${tsquery})`;
+    const results = await db
+      .select({
+        content: documentChunks.content,
+        documentId: documentChunks.documentId,
+        chunkIndex: documentChunks.chunkIndex,
+        similarity: rank,
+      })
+      .from(documentChunks)
+      .where(and(inArray(documentChunks.collectionId, collectionIds), sql`to_tsvector('english', ${documentChunks.content}) @@ ${tsquery}`))
+      .orderBy((t) => desc(t.similarity))
+      .limit(k);
+    if (results.length === 0) return [];
+
+    const documentIds = [...new Set(results.map((h) => h.documentId))];
+    const docs = await db.query.documents.findMany({ where: inArray(documents.id, documentIds) });
+    const docsById = new Map(docs.map((d) => [d.id, d]));
+    return results.map((hit) => ({ ...hit, filename: docsById.get(hit.documentId)?.filename ?? "unknown" }));
+  } catch (err) {
+    // Keyword search is an enhancement — never let it break retrieval.
+    console.error("keyword retrieval failed", err);
+    return [];
+  }
+}
+
+/**
+ * Hybrid retrieval: vector similarity fused with keyword ranking. Returns
+ * chunks carrying their *vector* similarity where known, so downstream
+ * relevance thresholds keep a consistent meaning; keyword-only hits get the
+ * similarity they'd score on their own terms.
+ */
+export async function retrieveHybrid(collectionIds: string[], query: string, k = TOP_K): Promise<ScoredChunk[]> {
+  const [vector, keyword] = await Promise.all([
+    retrieveScored(collectionIds, query, k),
+    retrieveKeyword(collectionIds, query, k),
+  ]);
+  if (keyword.length === 0) return vector;
+  if (vector.length === 0) return keyword;
+
+  const key = (c: ScoredChunk) => `${c.documentId}:${c.chunkIndex}`;
+  const vectorSimilarity = new Map(vector.map((c) => [key(c), c.similarity]));
+  return reciprocalRankFusion([vector, keyword], key)
+    .slice(0, k)
+    .map(({ item }) => ({ ...item, similarity: vectorSimilarity.get(key(item)) ?? item.similarity }));
+}
+
+/**
  * The scored retrieval primitive: the most relevant chunks for a query, with
  * their cosine similarity and full content intact. `retrieveContext` formats
  * these for a prompt; deep research ranks and cites them, so it needs the

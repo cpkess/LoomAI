@@ -6,8 +6,7 @@ import { db } from "@/lib/db";
 import { organizations, projects, solutions, type Organization, type Project, type Solution } from "@/lib/db/schema";
 
 import { enqueueSolution } from "@/lib/agents/engine";
-import { extractJson } from "@/lib/agents/json";
-import { systemReply } from "@/lib/agents/subagent";
+import { generateStructured } from "@/lib/agents/structured";
 import { recordProjectEvent, retrieveProjectContext } from "./knowledge";
 import {
   citationStats,
@@ -61,6 +60,26 @@ export const verificationSchema = z.object({
 });
 export type Verification = z.infer<typeof verificationSchema>;
 
+// The solve runs in three stages rather than one call. Two reasons: a 32k local
+// model asked for the whole model at once produces markedly less consistent
+// output (and truncates), and — more importantly — writing the recommendation
+// in the same breath as the findings means nothing forces the recommendation to
+// follow from them. Evidence first, conclusion second, actions third.
+const findingsStageSchema = z.object({
+  findings: solutionModelSchema.shape.findings,
+  analysis: solutionModelSchema.shape.analysis,
+});
+const conclusionStageSchema = z.object({
+  title: solutionModelSchema.shape.title,
+  recommendation: solutionModelSchema.shape.recommendation,
+  executiveSummary: solutionModelSchema.shape.executiveSummary,
+});
+const actionStageSchema = z.object({
+  risks: solutionModelSchema.shape.risks,
+  plan: solutionModelSchema.shape.plan,
+  metrics: solutionModelSchema.shape.metrics,
+});
+
 // Citable evidence the solution stands on lives with the research engine that
 // produces it; re-exported here because it's part of the Solution's public shape.
 export { evidenceSchema, researchRecordSchema, type EvidenceItem, type ResearchRecord };
@@ -102,10 +121,6 @@ export async function startSolution(projectId: string, orgId: string, userId: st
 
 // --- The state machine ------------------------------------------------------
 
-async function runRole(org: Organization, persona: string, prompt: string, gen = generation.work): Promise<string> {
-  return systemReply(org, prompt, { persona, gen });
-}
-
 /** Advance a solution by one step and re-enqueue until terminal. */
 export async function advanceSolution(solutionId: string): Promise<void> {
   const s = await db.query.solutions.findFirst({ where: eq(solutions.id, solutionId) });
@@ -128,10 +143,13 @@ async function diagnose(s: Solution, project: Project, org: Organization): Promi
   const scope = scopeBlock(parseCharter(project.charter), project.description);
   const context = await retrieveProjectContext({ id: project.id, organizationId: org.id }, project.description ?? project.title).catch(() => "");
 
-  const text = await runRole(
+  const problem = await generateStructured({
     org,
-    DIAGNOSER,
-    [
+    persona: DIAGNOSER,
+    label: "solution.diagnose",
+    schema: problemSchema,
+    gen: generation.plan,
+    prompt: [
       `A project named "${project.title}" needs a decisive answer.`,
       scope ? `\n${scope}\n` : project.description ? `Brief: ${project.description}` : "",
       context ? `\nWhat the project knows:\n${context}\n` : "",
@@ -140,12 +158,7 @@ async function diagnose(s: Solution, project: Project, org: Organization): Promi
     ]
       .filter(Boolean)
       .join("\n"),
-    generation.plan
-  );
-  const parsed = problemSchema.safeParse(extractJson(text));
-  const problem: Problem = parsed.success
-    ? parsed.data
-    : { coreProblem: project.description?.trim() || project.title, whyItMatters: "", decision: "", solutionCriteria: [] };
+  });
 
   const next = s.researchMode ? "researching" : "solving";
   await db.update(solutions).set({ problem, status: next, updatedAt: new Date() }).where(eq(solutions.id, s.id));
@@ -166,6 +179,7 @@ async function research(s: Solution, project: Project, org: Organization): Promi
     coreProblem: problem.coreProblem,
     criteria: problem.solutionCriteria,
     scope: scopeBlock(parseCharter(project.charter), project.description),
+    description: project.description,
   });
 
   await db.update(solutions).set({ evidence, research: record, status: "solving", updatedAt: new Date() }).where(eq(solutions.id, s.id));
@@ -224,30 +238,86 @@ async function solve(s: Solution, project: Project, org: Organization): Promise<
   const context = evidence.length === 0 ? await retrieveProjectContext({ id: project.id, organizationId: org.id }, problem.coreProblem).catch(() => "") : "";
   const block = evidenceBlock(evidence);
 
-  const text = await runRole(
+  // Shared framing every stage sees, so the three calls stay on the same problem.
+  const framing = [
+    `Core problem: ${problem.coreProblem}`,
+    problem.decision ? `Key decision: ${problem.decision}` : "",
+    problem.solutionCriteria.length ? `A good solution must: ${problem.solutionCriteria.join("; ")}` : "",
+    block ? `\n${block}\n` : context ? `\nEvidence available:\n${context}\n` : "",
+    isRevision && verification?.success && verification.data.fixes.length
+      ? `A previous attempt fell short. Fix these gaps:\n${verification.data.fixes.map((f) => `- ${f}`).join("\n")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const citeRule = evidence.length
+    ? `Every point must end with the [E#] tag(s) it rests on — only tags from E1–E${evidence.length}. If the evidence does not support a point, leave it out rather than asserting it uncited.`
+    : "";
+
+  // Stage 1 — what the evidence actually says. This runs first so the
+  // conclusion has to be derived from it rather than asserted alongside it.
+  const stage1 = await generateStructured({
     org,
-    SOLVER,
-    [
-      `Produce the definitive solution to this problem.`,
-      `Core problem: ${problem.coreProblem}`,
-      problem.decision ? `Key decision: ${problem.decision}` : "",
-      problem.solutionCriteria.length ? `A good solution must: ${problem.solutionCriteria.join("; ")}` : "",
-      block ? `\n${block}\n` : context ? `\nEvidence available:\n${context}\n` : "",
-      isRevision && verification?.success && verification.data.fixes.length
-        ? `Your previous attempt fell short. Fix these gaps:\n${verification.data.fixes.map((f) => `- ${f}`).join("\n")}`
-        : "",
-      "Deliver ONE coherent, decision-ready answer: a title, an executive summary, a single clear recommendation, the findings and analysis that support it, the key risks with mitigations, a concrete plan (steps, and owners where sensible), and any quantitative metrics that matter.",
-      evidence.length
-        ? `Every finding, analysis point, and metric must end with the [E#] tag(s) it rests on — only tags from E1–E${evidence.length}. If nothing in the evidence supports a point, leave the point out rather than asserting it uncited.`
-        : "",
-      'Respond with JSON only: {"title":"...","executiveSummary":"...","recommendation":"...","findings":[{"title":"...","detail":"..."}],"analysis":[{"point":"...","evidence":"..."}],"risks":[{"risk":"...","mitigation":"..."}],"plan":[{"step":"...","detail":"...","owner":"..."}],"metrics":[{"name":"...","value":"...","note":"..."}]}',
+    persona: SOLVER,
+    label: "solution.findings",
+    schema: findingsStageSchema,
+    gen: generation.work,
+    prompt: [
+      "Establish what the evidence supports for this problem. Do not state a recommendation yet.",
+      framing,
+      "Give the substantive findings (each a titled claim with its detail) and the analysis points that follow from them.",
+      citeRule,
+      'Respond with JSON only: {"findings":[{"title":"...","detail":"..."}],"analysis":[{"point":"...","evidence":"..."}]}',
     ]
       .filter(Boolean)
       .join("\n"),
-    generation.work
-  );
-  const parsed = solutionModelSchema.safeParse(extractJson(text));
-  const drafted: SolutionModel = parsed.success ? parsed.data : { ...solutionModelSchema.parse({}), title: project.title, executiveSummary: problem.coreProblem };
+  });
+
+  const established = [
+    stage1.findings.length ? `Findings:\n${stage1.findings.map((f) => `- ${f.title}: ${f.detail}`).join("\n")}` : "",
+    stage1.analysis.length ? `Analysis:\n${stage1.analysis.map((a) => `- ${a.point}${a.evidence ? ` (${a.evidence})` : ""}`).join("\n")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  // Stage 2 — the conclusion, constrained to what stage 1 established.
+  const stage2 = await generateStructured({
+    org,
+    persona: SOLVER,
+    label: "solution.recommendation",
+    schema: conclusionStageSchema,
+    gen: generation.summary,
+    prompt: [
+      "Draw the conclusion these findings lead to.",
+      framing,
+      `\nWhat has been established:\n${established || "(nothing was established — say so plainly rather than inventing support)"}\n`,
+      "Give a short title for the solution, ONE clear recommendation, and an executive summary. The recommendation must follow from the findings above — do not introduce claims they do not support.",
+      'Respond with JSON only: {"title":"...","recommendation":"...","executiveSummary":"..."}',
+    ].join("\n"),
+  });
+
+  // Stage 3 — what to do about it, given the conclusion.
+  const stage3 = await generateStructured({
+    org,
+    persona: SOLVER,
+    label: "solution.plan",
+    schema: actionStageSchema,
+    gen: generation.work,
+    prompt: [
+      "Turn this decision into action.",
+      framing,
+      `\nRecommendation: ${stage2.recommendation}`,
+      established ? `\n${established}\n` : "",
+      "Give the key risks with mitigations, a concrete plan (steps, detail, and owners where sensible), and the quantitative metrics that matter.",
+      citeRule,
+      'Respond with JSON only: {"risks":[{"risk":"...","mitigation":"..."}],"plan":[{"step":"...","detail":"...","owner":"..."}],"metrics":[{"name":"...","value":"...","note":"..."}]}',
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  });
+
+  const drafted: SolutionModel = { ...stage2, ...stage1, ...stage3 };
 
   // Citations are checked, not trusted: invented [E#] tags are removed and the
   // grounding rate is recorded for the verifier.
@@ -278,10 +348,13 @@ async function verify(s: Solution, project: Project, org: Organization): Promise
   // reviewer should weigh the solution knowing where it's standing on nothing.
   const unanswered = (record?.questions ?? []).filter((q) => q.found === 0).map((q) => q.question);
 
-  const text = await runRole(
+  const verification = await generateStructured({
     org,
-    VERIFIER,
-    [
+    persona: VERIFIER,
+    label: "solution.verify",
+    schema: verificationSchema,
+    gen: generation.extract,
+    prompt: [
       "Judge whether this solution actually solves the problem and meets its success criteria.",
       `Core problem: ${problem.coreProblem}`,
       problem.solutionCriteria.length ? `Success criteria: ${problem.solutionCriteria.join("; ")}` : "",
@@ -305,10 +378,7 @@ async function verify(s: Solution, project: Project, org: Organization): Promise
     ]
       .filter(Boolean)
       .join("\n"),
-    generation.extract
-  );
-  const parsed = verificationSchema.safeParse(extractJson(text));
-  const verification: Verification = parsed.success ? parsed.data : { solvesProblem: true, score: 70, gaps: [], fixes: [] };
+  });
 
   // A solution that cites evidence that doesn't exist has failed on its face,
   // whatever the reviewer thought of the prose.
