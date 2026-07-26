@@ -193,6 +193,43 @@ export function mergeRounds<T extends Candidate>(carried: T[], fresh: T[], max: 
   return [...freshRanked, ...carriedRanked];
 }
 
+/**
+ * Pool the evidence from several branches for a comparison.
+ *
+ * Ranking the union by score alone would let the better-sourced avenue fill the
+ * budget and quietly starve the other — which defeats the point of comparing
+ * them. So this rotates: each branch contributes its best, then its next best,
+ * until the budget is spent. Evidence both branches found is counted once and
+ * costs one slot, not two.
+ */
+export function mergeBranches<T extends Candidate>(branches: T[][], max: number): T[] {
+  const ranked = branches.filter((b) => b.length > 0).map((b) => rankEvidence(dedupeEvidence(b), max));
+  if (ranked.length === 0) return [];
+
+  const taken = new Set<string>();
+  const picked: T[] = [];
+  const cursors = new Array(ranked.length).fill(0);
+
+  for (let guard = 0; picked.length < max && guard < max * ranked.length + ranked.length; guard++) {
+    let progressed = false;
+    for (let b = 0; b < ranked.length && picked.length < max; b++) {
+      const list = ranked[b];
+      // Skip past anything an earlier branch already contributed.
+      while (cursors[b] < list.length) {
+        const item = list[cursors[b]++];
+        const key = `${item.url ?? item.source}|${dedupeKey(item.snippet)}`;
+        if (taken.has(key)) continue;
+        taken.add(key);
+        picked.push(item);
+        progressed = true;
+        break;
+      }
+    }
+    if (!progressed) break;
+  }
+  return picked;
+}
+
 /** Assign the [E1]…[E#] tags the solver cites. */
 export function numberEvidence(items: Candidate[]): EvidenceItem[] {
   return items.map((e, i) => ({ ...e, id: `E${i + 1}` }));

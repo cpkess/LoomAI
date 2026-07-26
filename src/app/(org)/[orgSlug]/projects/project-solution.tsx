@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, FileText, Loader2, MessageSquare, Presentation, Search, ShieldAlert, Sparkles, Target } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, FileText, GitBranch, GitMerge, Loader2, MessageSquare, Presentation, Search, ShieldAlert, Sparkles, Target } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+
+import { layoutRounds } from "./round-lanes";
 
 interface Problem {
   coreProblem: string;
@@ -62,6 +64,7 @@ interface SolutionState {
   iteration: number;
   round: number;
   direction: string | null;
+  mergedFrom: string[];
   researchMode: boolean;
   problem: Problem | null;
   model: SolutionModel | null;
@@ -75,6 +78,8 @@ interface RoundSummary {
   direction: string | null;
   status: string;
   score: number | null;
+  parentId: string | null;
+  mergedFrom: string[];
   createdAt: string;
 }
 
@@ -91,6 +96,7 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
   const [sol, setSol] = useState<SolutionState | null | undefined>(undefined);
   const [rounds, setRounds] = useState<RoundSummary[]>([]);
   const [viewing, setViewing] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
   const [research, setResearch] = useState(true);
 
@@ -109,22 +115,37 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
     return () => clearInterval(t);
   }, [load]);
 
-  async function solve(direction?: string) {
+  async function post(body: Record<string, unknown>, success: string) {
     setStarting(true);
     const res = await fetch(base, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ research, ...(direction ? { direction } : {}) }),
+      body: JSON.stringify({ research, ...body }),
     });
     setStarting(false);
     if (!res.ok) {
-      toast.error("Could not start");
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.error ?? "Could not start");
       return;
     }
-    // A new round becomes the one on screen.
+    // Whatever we just started becomes the round on screen.
     setViewing(null);
-    toast.success(direction ? "New round — researching the avenue you asked for" : research ? "Solving — gathering evidence first" : "Solving — diagnosing the core problem first");
+    setSelected([]);
+    toast.success(success);
     void load();
+  }
+
+  async function solve(direction?: string) {
+    // A steer forks from the round you are looking at, so exploring an earlier
+    // answer's alternative doesn't have to go through the latest one.
+    await post(
+      direction ? { direction, ...(viewing ? { from: viewing } : {}) } : {},
+      direction ? "New round — researching the avenue you asked for" : research ? "Solving — gathering evidence first" : "Solving — diagnosing the core problem first"
+    );
+  }
+
+  async function compare(ids: string[], direction: string) {
+    await post({ compare: ids, ...(direction ? { direction } : {}) }, "Weighing those rounds against each other");
   }
 
   if (sol === undefined) return <Loading />;
@@ -190,17 +211,47 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
       </div>
 
       {rounds.length > 1 && (
-        <RoundStrip rounds={rounds} currentId={sol.id} onPick={(id) => setViewing(id)} latestId={rounds[0]?.id ?? null} />
+        <RoundLanes
+          rounds={rounds}
+          currentId={sol.id}
+          latestId={rounds[0]?.id ?? null}
+          selected={selected}
+          busy={starting}
+          onPick={(id) => setViewing(id)}
+          onToggle={(id) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id].slice(-4)))}
+          onCompare={() => void compare(selected, "")}
+        />
       )}
 
-      {sol.direction && (
-        <div className="flex items-start gap-2 rounded-md border-l-2 border-primary bg-muted/40 p-3 text-sm">
-          <MessageSquare className="mt-0.5 size-4 shrink-0 text-primary" />
+      {sol.mergedFrom.length > 0 ? (
+        <div className="flex items-start gap-2 rounded-md border-l-2 border-violet-500 bg-muted/40 p-3 text-sm">
+          <GitMerge className="mt-0.5 size-4 shrink-0 text-violet-500" />
           <div>
-            <span className="text-xs font-medium text-muted-foreground">You asked this round to:</span>
-            <p>{sol.direction}</p>
+            <span className="text-xs font-medium text-muted-foreground">
+              Weighing {sol.mergedFrom.length} avenues against each other
+            </span>
+            <p>
+              Evidence is pooled from rounds{" "}
+              {rounds
+                .filter((r) => sol.mergedFrom.includes(r.id))
+                .map((r) => r.round)
+                .sort((a, b) => a - b)
+                .join(" and ")}
+              , with each avenue given equal room.
+            </p>
+            {sol.direction && <p className="mt-1 text-muted-foreground">You also asked: {sol.direction}</p>}
           </div>
         </div>
+      ) : (
+        sol.direction && (
+          <div className="flex items-start gap-2 rounded-md border-l-2 border-primary bg-muted/40 p-3 text-sm">
+            <MessageSquare className="mt-0.5 size-4 shrink-0 text-primary" />
+            <div>
+              <span className="text-xs font-medium text-muted-foreground">You asked this round to:</span>
+              <p>{sol.direction}</p>
+            </div>
+          </div>
+        )
       )}
 
       {sol.problem && <ProblemCard problem={sol.problem} />}
@@ -215,7 +266,7 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
 
       {sol.evidence.length > 0 && <EvidenceCard evidence={sol.evidence} />}
 
-      {!running && <FollowUpCard busy={starting} isLatest={sol.id === (rounds[0]?.id ?? sol.id)} onAsk={(d) => void solve(d)} />}
+      {!running && <FollowUpCard busy={starting} round={sol.round} onAsk={(d) => void solve(d)} />}
     </div>
   );
 }
@@ -225,7 +276,7 @@ export function ProjectSolution({ orgSlug, projectId }: { orgSlug: string; proje
  * becomes the brief for a fresh research pass that keeps what's already been
  * found and goes after the avenue you name.
  */
-function FollowUpCard({ busy, isLatest, onAsk }: { busy: boolean; isLatest: boolean; onAsk: (direction: string) => void }) {
+function FollowUpCard({ busy, round, onAsk }: { busy: boolean; round: number; onAsk: (direction: string) => void }) {
   const [text, setText] = useState("");
   const direction = text.trim();
 
@@ -253,7 +304,7 @@ function FollowUpCard({ busy, isLatest, onAsk }: { busy: boolean; isLatest: bool
         />
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs text-muted-foreground">
-            {isLatest ? "⌘/Ctrl + Enter to run" : "This starts a new round from the latest answer, not the one you're viewing."}
+            Branches from round {round} · ⌘/Ctrl + Enter to run
           </span>
           <Button size="sm" disabled={busy || !direction} onClick={() => onAsk(direction)}>
             {busy ? <Loader2 className="animate-spin" /> : <Search />}
@@ -266,42 +317,96 @@ function FollowUpCard({ busy, isLatest, onAsk }: { busy: boolean; isLatest: bool
 }
 
 /** Earlier rounds stay reachable, so a steer that went nowhere isn't a loss. */
-function RoundStrip({
+function RoundLanes({
   rounds,
   currentId,
   latestId,
+  selected,
+  busy,
   onPick,
+  onToggle,
+  onCompare,
 }: {
   rounds: RoundSummary[];
   currentId: string;
   latestId: string | null;
+  selected: string[];
+  busy: boolean;
   onPick: (id: string | null) => void;
+  onToggle: (id: string) => void;
+  onCompare: () => void;
 }) {
+  const laid = layoutRounds(rounds);
+  const byId = new Map(rounds.map((r) => [r.id, r]));
+
   return (
-    <div className="flex flex-wrap items-center gap-1.5 text-xs">
-      <span className="text-muted-foreground">Rounds:</span>
-      {[...rounds].reverse().map((r) => {
-        const active = r.id === currentId;
-        return (
-          <button
-            key={r.id}
-            onClick={() => onPick(r.id === latestId ? null : r.id)}
-            title={r.direction ?? "The first pass"}
-            className={`rounded-md border px-2 py-1 transition-colors ${
-              active ? "border-primary bg-primary/10 font-medium" : "hover:border-primary/40"
-            }`}
-          >
-            {r.round}
-            {r.score !== null && <span className="ml-1 text-muted-foreground">{r.score}</span>}
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <GitBranch className="size-4 text-muted-foreground" />
+            Rounds
+          </CardTitle>
+          {selected.length > 0 && (
+            <Button size="sm" disabled={busy || selected.length < 2} onClick={onCompare}>
+              {busy ? <Loader2 className="animate-spin" /> : <GitMerge />}
+              {selected.length < 2 ? "Select one more" : `Compare ${selected.length}`}
+            </Button>
+          )}
+        </div>
+        <CardDescription>
+          Each steer branches from the round you were viewing. Tick two or more to weigh them against each other — their
+          evidence is pooled and one recommendation is drawn from it.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-0.5">
+        {laid.map(({ round: r, depth }) => {
+          const active = r.id === currentId;
+          const picked = selected.includes(r.id);
+          const merged = r.mergedFrom
+            .map((id) => byId.get(id)?.round)
+            .filter((n): n is number => typeof n === "number")
+            .sort((a, b) => a - b);
+          return (
+            <div key={r.id} className="flex items-center gap-2 text-sm" style={{ paddingLeft: `${depth * 18}px` }}>
+              {depth > 0 && <span className="select-none text-muted-foreground">└</span>}
+              <input
+                type="checkbox"
+                checked={picked}
+                onChange={() => onToggle(r.id)}
+                aria-label={`Select round ${r.round} to compare`}
+                className="size-3.5 shrink-0 cursor-pointer accent-primary"
+              />
+              <button
+                onClick={() => onPick(r.id === latestId ? null : r.id)}
+                className={`flex min-w-0 flex-1 items-center gap-2 rounded-md border px-2 py-1 text-left transition-colors ${
+                  active ? "border-primary bg-primary/10" : "border-transparent hover:border-primary/40"
+                }`}
+              >
+                <span className={`shrink-0 ${active ? "font-medium" : ""}`}>Round {r.round}</span>
+                {merged.length > 0 && (
+                  <Badge variant="outline" className="shrink-0 gap-1 text-[10px]">
+                    <GitMerge className="size-3" />
+                    {merged.join("+")}
+                  </Badge>
+                )}
+                {r.status !== "completed" && r.status !== "failed" && <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" />}
+                {r.status === "failed" && <Badge variant="destructive" className="shrink-0 text-[10px]">failed</Badge>}
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                  {r.direction ?? (merged.length > 0 ? "reconciling the avenues above" : "the original line of enquiry")}
+                </span>
+                {r.score !== null && <span className="shrink-0 text-xs text-muted-foreground">{r.score}</span>}
+              </button>
+            </div>
+          );
+        })}
+        {currentId !== latestId && (
+          <button onClick={() => onPick(null)} className="mt-1 self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">
+            back to latest
           </button>
-        );
-      })}
-      {currentId !== latestId && (
-        <button onClick={() => onPick(null)} className="ml-1 text-muted-foreground underline underline-offset-2 hover:text-foreground">
-          back to latest
-        </button>
-      )}
-    </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

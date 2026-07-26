@@ -76,12 +76,44 @@ export function reciprocalRankFusion<T>(lists: T[][], identity: (item: T) => str
  * search alone misses exact terms — product names, figures, acronyms — which is
  * precisely what research questions turn on, so we run both and fuse.
  */
+const STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "was", "were", "be", "we", "our",
+  "what", "which", "how", "why", "when", "who", "should", "would", "could", "do", "does", "did", "it", "its",
+  "this", "that", "with", "from", "at", "by", "as", "if", "any", "much", "many", "large", "fast", "growing",
+]);
+
+/**
+ * Loosen a natural-language question into an OR query.
+ *
+ * `websearch_to_tsquery` ANDs its terms, so a full question like "How large and
+ * fast-growing is the EU SaaS market?" matches only a chunk containing *every*
+ * word — which in practice is nothing. Research questions are questions, so
+ * without this fallback the keyword channel almost never fires.
+ */
+export function looseTsQuery(query: string): string {
+  const terms = query
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 2 && !STOPWORDS.has(t));
+  return [...new Set(terms)].slice(0, 12).join(" or ");
+}
+
+/**
+ * Keyword search over chunk text, using postgres full-text ranking. Vector
+ * search alone misses exact terms — product names, figures, acronyms — which is
+ * precisely what research questions turn on, so we run both and fuse.
+ *
+ * The strict query runs first (it honours quoted phrases and explicit
+ * operators); if it matches nothing, the loosened OR form runs.
+ */
 export async function retrieveKeyword(collectionIds: string[], query: string, k = TOP_K): Promise<ScoredChunk[]> {
   if (collectionIds.length === 0 || !query.trim()) return [];
-  try {
-    const tsquery = sql`websearch_to_tsquery('english', ${query})`;
+
+  const search = async (text: string) => {
+    const tsquery = sql`websearch_to_tsquery('english', ${text})`;
     const rank = sql<number>`ts_rank(to_tsvector('english', ${documentChunks.content}), ${tsquery})`;
-    const results = await db
+    return db
       .select({
         content: documentChunks.content,
         documentId: documentChunks.documentId,
@@ -92,6 +124,14 @@ export async function retrieveKeyword(collectionIds: string[], query: string, k 
       .where(and(inArray(documentChunks.collectionId, collectionIds), sql`to_tsvector('english', ${documentChunks.content}) @@ ${tsquery}`))
       .orderBy((t) => desc(t.similarity))
       .limit(k);
+  };
+
+  try {
+    let results = await search(query);
+    if (results.length === 0) {
+      const loose = looseTsQuery(query);
+      if (loose) results = await search(loose);
+    }
     if (results.length === 0) return [];
 
     const documentIds = [...new Set(results.map((h) => h.documentId))];
@@ -106,10 +146,24 @@ export async function retrieveKeyword(collectionIds: string[], query: string, k 
 }
 
 /**
- * Hybrid retrieval: vector similarity fused with keyword ranking. Returns
- * chunks carrying their *vector* similarity where known, so downstream
- * relevance thresholds keep a consistent meaning; keyword-only hits get the
- * similarity they'd score on their own terms.
+ * How much relevance to credit a chunk for placing at `rank` in the keyword
+ * results. `ts_rank` and cosine similarity are not comparable numbers, so the
+ * keyword channel's *position* is converted to a similarity-like confidence
+ * instead: the top hit is treated as strongly relevant and it decays with rank,
+ * falling below the evidence bar past the first handful.
+ */
+export function keywordConfidence(rank: number): number {
+  return Math.max(0, 0.7 - rank * 0.05);
+}
+
+/**
+ * Hybrid retrieval: vector similarity fused with keyword ranking.
+ *
+ * The score a chunk comes back with is the *stronger* of the two channels'
+ * opinions. Carrying only the vector similarity (an earlier mistake here) threw
+ * away the keyword signal entirely, so a chunk that keyword search ranked first
+ * still arrived wearing its weak embedding score — and the downstream evidence
+ * floor then discarded exactly the exact-term matches hybrid exists to find.
  */
 export async function retrieveHybrid(collectionIds: string[], query: string, k = TOP_K): Promise<ScoredChunk[]> {
   const [vector, keyword] = await Promise.all([
@@ -117,13 +171,18 @@ export async function retrieveHybrid(collectionIds: string[], query: string, k =
     retrieveKeyword(collectionIds, query, k),
   ]);
   if (keyword.length === 0) return vector;
-  if (vector.length === 0) return keyword;
+  if (vector.length === 0) return keyword.map((c, i) => ({ ...c, similarity: keywordConfidence(i) }));
 
   const key = (c: ScoredChunk) => `${c.documentId}:${c.chunkIndex}`;
   const vectorSimilarity = new Map(vector.map((c) => [key(c), c.similarity]));
+  const keywordSimilarity = new Map(keyword.map((c, i) => [key(c), keywordConfidence(i)]));
+
   return reciprocalRankFusion([vector, keyword], key)
     .slice(0, k)
-    .map(({ item }) => ({ ...item, similarity: vectorSimilarity.get(key(item)) ?? item.similarity }));
+    .map(({ item }) => ({
+      ...item,
+      similarity: Math.max(vectorSimilarity.get(key(item)) ?? 0, keywordSimilarity.get(key(item)) ?? 0),
+    }));
 }
 
 /**

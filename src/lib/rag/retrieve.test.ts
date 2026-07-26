@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { reciprocalRankFusion } from "./retrieve";
+import { keywordConfidence, looseTsQuery, reciprocalRankFusion } from "./retrieve";
 
 const id = (s: { k: string }) => s.k;
 
@@ -43,5 +43,51 @@ describe("reciprocal rank fusion", () => {
     const sharpGap = sharp[0].score - sharp[1].score;
     const flatGap = flat[0].score - flat[1].score;
     expect(flatGap).toBeLessThan(sharpGap);
+  });
+});
+
+// Research questions are questions. websearch_to_tsquery ANDs its terms, so a
+// full question matches only a chunk containing every word — i.e. nothing.
+describe("loosening a question into a keyword query", () => {
+  it("ORs the significant terms and drops question filler", () => {
+    const q = looseTsQuery("How large and fast-growing is the EU SaaS market?");
+    expect(q).toContain(" or ");
+    expect(q).toContain("saas");
+    expect(q).toContain("market");
+    expect(q).not.toContain("how");
+    expect(q).not.toContain("the");
+  });
+
+  it("keeps hyphenated and numeric terms, which are exactly what embeddings miss", () => {
+    const q = looseTsQuery("What was ARR in 2024 for partner-led entry?");
+    expect(q).toContain("2024");
+    expect(q).toContain("partner-led");
+    expect(q).toContain("arr");
+  });
+
+  it("does not repeat a term", () => {
+    expect(looseTsQuery("market market market")).toBe("market");
+  });
+
+  it("returns nothing when the query is all filler", () => {
+    expect(looseTsQuery("what is the")).toBe("");
+  });
+});
+
+// The bug this guards: hybrid used to report the vector score for every hit, so
+// a chunk keyword search ranked first still arrived with its weak embedding
+// score and got cut by the evidence floor.
+describe("keyword rank confidence", () => {
+  it("credits the top keyword hit enough to clear the evidence bar", () => {
+    expect(keywordConfidence(0)).toBeGreaterThan(0.45);
+  });
+
+  it("decays with rank so the tail does not qualify as evidence", () => {
+    expect(keywordConfidence(0)).toBeGreaterThan(keywordConfidence(3));
+    expect(keywordConfidence(8)).toBeLessThan(0.45);
+  });
+
+  it("never goes negative", () => {
+    expect(keywordConfidence(100)).toBe(0);
   });
 });

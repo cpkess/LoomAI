@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { generation } from "@/lib/ai/generation";
@@ -13,6 +13,8 @@ import {
   deepResearch,
   evidenceBlock,
   evidenceSchema,
+  mergeBranches,
+  numberEvidence,
   researchRecordSchema,
   stripUnknownCitations,
   type CitationStats,
@@ -29,6 +31,9 @@ import { parseCharter, scopeBlock } from "./scoping";
 // re-entrant, so a run resumes cleanly after a restart.
 
 const MAX_ITERATIONS = Number(process.env.LOOMAI_SOLUTION_MAX_ITER ?? 2);
+// A comparison pools several branches, so it gets a wider evidence budget than
+// a single round — otherwise each avenue arrives half-represented.
+const MAX_MERGED_EVIDENCE = Number(process.env.LOOMAI_MERGED_MAX_EVIDENCE ?? 24);
 
 // --- The three structured artifacts -----------------------------------------
 
@@ -136,9 +141,17 @@ export async function continueSolution(
   orgId: string,
   userId: string | null,
   direction: string,
-  research = true
+  research = true,
+  fromSolutionId?: string
 ): Promise<string> {
-  const previous = await latestSolution(projectId);
+  // Fork from a named round when asked, so a dead end doesn't trap the work —
+  // otherwise continue from the newest.
+  const previous = fromSolutionId
+    ? (await db.query.solutions.findFirst({ where: eq(solutions.id, fromSolutionId) })) ?? null
+    : await latestSolution(projectId);
+  if (previous && (previous.projectId !== projectId || previous.organizationId !== orgId)) {
+    throw new Error("That round belongs to a different project");
+  }
   if (!previous) return startSolution(projectId, orgId, userId, research);
 
   const [s] = await db
@@ -151,7 +164,7 @@ export async function continueSolution(
       createdByUserId: userId ?? null,
       direction: direction.trim(),
       parentSolutionId: previous.id,
-      round: (previous.round ?? 1) + 1,
+      round: await nextRoundLabel(projectId),
       // Carried so the research phase can build on it; renumbered when merged.
       evidence: previous.evidence ?? null,
     })
@@ -160,6 +173,109 @@ export async function continueSolution(
   await recordProjectEvent(projectId, "solution_round", `Round ${s.round}: ${direction.trim().slice(0, 160)}`, { type: "solution", id: s.id });
   enqueueSolution(s.id);
   return s.id;
+}
+
+/**
+ * Weigh several rounds against each other and land on one answer.
+ *
+ * This is a merge, but not a diff — you cannot reconcile "partner-led entry"
+ * and "acquire a competitor" by combining their text. Something has to weigh
+ * them and decide, so a merge here is a *solve*: pool the branches' evidence,
+ * show the solver what each avenue concluded, and ask for a single
+ * recommendation that accounts for both.
+ *
+ * The pooled evidence is rotated across branches rather than ranked flat, so
+ * the better-sourced avenue can't starve the other — see mergeBranches.
+ *
+ * Fresh research is deliberately skipped: the evidence already exists on both
+ * sides, and gathering more risks the comparison drifting to a third avenue.
+ * To widen it, steer the comparison round afterwards — that path does research.
+ */
+export async function compareSolutions(
+  projectId: string,
+  orgId: string,
+  userId: string | null,
+  sourceIds: string[],
+  direction = ""
+): Promise<string> {
+  const rows = await db.query.solutions.findMany({ where: inArray(solutions.id, sourceIds) });
+  const sources = rows.filter((r) => r.projectId === projectId && r.organizationId === orgId);
+  if (sources.length < 2) throw new Error("Pick at least two rounds of this project to compare");
+
+  const branches = sources.map((s) => {
+    const evidence = s.evidence ? evidenceSchema.safeParse(s.evidence).data ?? [] : [];
+    return evidence.map(({ id: _id, ...rest }) => rest);
+  });
+  const evidence = numberEvidence(mergeBranches(branches, MAX_MERGED_EVIDENCE));
+
+  // The newest of the compared rounds is the primary lineage link, so the tree
+  // still renders as a tree; mergedFrom records the full set.
+  const primary = [...sources].sort((a, b) => (b.round ?? 1) - (a.round ?? 1))[0];
+
+  const [s] = await db
+    .insert(solutions)
+    .values({
+      projectId,
+      organizationId: orgId,
+      status: "diagnosing",
+      researchMode: false,
+      createdByUserId: userId ?? null,
+      direction: direction.trim() || null,
+      parentSolutionId: primary.id,
+      mergedFrom: sources.map((x) => x.id),
+      round: await nextRoundLabel(projectId),
+      evidence,
+    })
+    .returning();
+
+  await recordProjectEvent(
+    projectId,
+    "solution_compared",
+    `Round ${s.round}: comparing rounds ${sources.map((x) => x.round).sort((a, b) => a - b).join(" and ")} over ${evidence.length} pooled sources`,
+    { type: "solution", id: s.id }
+  );
+  enqueueSolution(s.id);
+  return s.id;
+}
+
+/** The rounds a comparison is weighing, oldest first. */
+async function mergedBranches(s: Solution): Promise<Solution[]> {
+  const ids = Array.isArray(s.mergedFrom) ? s.mergedFrom : [];
+  if (ids.length === 0) return [];
+  const rows = await db.query.solutions.findMany({ where: inArray(solutions.id, ids) });
+  return rows.sort((a, b) => (a.round ?? 1) - (b.round ?? 1));
+}
+
+/**
+ * What each compared avenue concluded — the material a comparison has to weigh.
+ */
+function branchDigest(branches: Solution[]): string {
+  return branches
+    .map((b) => {
+      const model = b.model ? solutionModelSchema.safeParse(b.model).data ?? null : null;
+      const problem = b.problem ? problemSchema.safeParse(b.problem).data ?? null : null;
+      return [
+        `AVENUE (round ${b.round})${b.direction ? ` — pursued because: "${b.direction}"` : " — the original line of enquiry"}`,
+        problem?.coreProblem ? `  Framed the problem as: ${problem.coreProblem}` : "",
+        model?.recommendation ? `  Concluded: ${model.recommendation}` : "  Reached no recommendation.",
+        model?.findings.length ? `  On the strength of: ${model.findings.map((f) => f.title).join("; ")}` : "",
+        model?.risks.length ? `  Risks it flagged: ${model.risks.map((r) => r.risk).join("; ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+}
+
+/**
+ * The next round label for a project. Once rounds can fork, a label can't be
+ * "parent + 1" — forking from round 1 while round 3 exists would collide. So
+ * labels are a flat sequence that identifies a round; lineage lives in
+ * parentSolutionId, and depth is derived from that chain.
+ */
+async function nextRoundLabel(projectId: string): Promise<number> {
+  const rows = await db.query.solutions.findMany({ where: eq(solutions.projectId, projectId), columns: { round: true } });
+  return rows.reduce((max, r) => Math.max(max, r.round ?? 1), 0) + 1;
 }
 
 /** The answer this round is following on from, for context in prompts. */
@@ -194,6 +310,8 @@ async function diagnose(s: Solution, project: Project, org: Organization): Promi
 
   const prior = await previousRound(s);
   const priorProblem = prior?.problem ? problemSchema.safeParse(prior.problem).data ?? null : null;
+  const branches = await mergedBranches(s);
+  const comparing = branches.length > 0;
 
   const problem = await generateStructured({
     org,
@@ -205,7 +323,19 @@ async function diagnose(s: Solution, project: Project, org: Organization): Promi
       `A project named "${project.title}" needs a decisive answer.`,
       scope ? `\n${scope}\n` : project.description ? `Brief: ${project.description}` : "",
       context ? `\nWhat the project knows:\n${context}\n` : "",
-      s.direction
+      comparing
+        ? [
+            "",
+            "This round RECONCILES several lines of enquiry that were pursued separately:",
+            "",
+            branchDigest(branches),
+            "",
+            s.direction ? `The user also asked: "${s.direction}"` : "",
+            "Diagnose the problem that has to be settled in order to choose between these avenues. If they framed the problem differently, say which framing is the right one.",
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : s.direction
         ? [
             "",
             "This is a FOLLOW-UP round. The problem was previously diagnosed as:",
@@ -305,11 +435,33 @@ async function solve(s: Solution, project: Project, org: Organization): Promise<
   const context = evidence.length === 0 ? await retrieveProjectContext({ id: project.id, organizationId: org.id }, problem.coreProblem).catch(() => "") : "";
   const block = evidenceBlock(evidence);
 
+  // A comparison round has to weigh the avenues, not pick a favourite by
+  // default — so it sees exactly what each concluded and is told to decide.
+  const branches = await mergedBranches(s);
+  const comparing = branches.length > 0;
+  const compareBlock = comparing
+    ? [
+        "",
+        "THIS ROUND RECONCILES SEVERAL AVENUES that were explored separately. Here is what each concluded:",
+        "",
+        branchDigest(branches),
+        "",
+        s.direction ? `The user also asked: "${s.direction}"` : "",
+        "The evidence below is pooled from all of them. Weigh the avenues against each other and commit to ONE recommendation.",
+        "Say plainly which avenue wins and why, and where an avenue was rejected, say what would have to be true for it to win instead.",
+        "Do not split the difference to avoid choosing, and do not simply restate both positions.",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
+
   // A steered round: the user's direction outranks the previous answer, and the
   // previous answer is shown only so this round doesn't repeat it.
   const prior = await previousRound(s);
   const priorModel = prior?.model ? solutionModelSchema.safeParse(prior.model).data ?? null : null;
-  const steer = s.direction
+  const steer = comparing
+    ? compareBlock
+    : s.direction
     ? [
         "",
         "THIS IS A FOLLOW-UP ROUND, requested by the user:",

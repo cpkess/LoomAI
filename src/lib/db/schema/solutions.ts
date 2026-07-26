@@ -42,6 +42,10 @@ export const solutions = pgTable("solutions", {
   direction: text("direction"),
   parentSolutionId: uuid("parent_solution_id"),
   round: integer("round").notNull().default(1),
+  // A comparison round weighs several rounds at once: their evidence is pooled
+  // and their conclusions are reconciled into one. parentSolutionId remains the
+  // primary lineage link so the tree still renders as a tree.
+  mergedFrom: jsonb("merged_from").$type<string[]>(),
   // The self-check: does this actually solve the diagnosed problem?
   verification: jsonb("verification"),
   iteration: integer("iteration").notNull().default(0),

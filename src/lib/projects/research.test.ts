@@ -8,6 +8,7 @@ import {
   extractCitations,
   fallbackPlan,
   gatherWeb,
+  mergeBranches,
   mergeRounds,
   numberEvidence,
   rankEvidence,
@@ -108,6 +109,45 @@ describe("merging a follow-up round with what came before", () => {
 
   it("behaves like a first round when there is nothing carried", () => {
     expect(mergeRounds([], fresh, 5)).toHaveLength(1);
+  });
+});
+
+// Comparing two avenues only means something if both are actually represented.
+describe("pooling evidence across branches", () => {
+  const strong = Array.from({ length: 6 }, (_, i) => candidate({ snippet: `A${i}`, kind: "document", score: 0.9, source: "a.md" }));
+  const weak = Array.from({ length: 6 }, (_, i) => candidate({ snippet: `B${i}`, kind: "web", score: 0.3, url: `https://b.example/${i}` }));
+
+  it("does not let the better-sourced branch starve the other", () => {
+    const merged = mergeBranches([strong, weak], 6);
+    expect(merged.filter((e) => e.snippet.startsWith("A"))).toHaveLength(3);
+    expect(merged.filter((e) => e.snippet.startsWith("B"))).toHaveLength(3);
+  });
+
+  it("takes each branch's best first", () => {
+    const merged = mergeBranches([strong, weak], 2);
+    expect(merged.map((e) => e.snippet)).toEqual(["A0", "B0"]);
+  });
+
+  it("counts evidence both branches found once, and charges it one slot", () => {
+    const shared = candidate({ snippet: "both found this", kind: "web", url: "https://shared.example/x", score: 0.8 });
+    const merged = mergeBranches([[shared, ...strong], [shared, ...weak]], 4);
+    expect(merged.filter((e) => e.snippet === "both found this")).toHaveLength(1);
+    expect(merged).toHaveLength(4);
+  });
+
+  it("gives the whole budget to the surviving branch when another is empty", () => {
+    expect(mergeBranches([strong, []], 4)).toHaveLength(4);
+  });
+
+  it("handles more than two branches", () => {
+    const third = [candidate({ snippet: "C0", kind: "knowledge", score: 0.5 })];
+    const merged = mergeBranches([strong, weak, third], 3);
+    expect(merged.map((e) => e.snippet)).toEqual(["A0", "B0", "C0"]);
+  });
+
+  it("returns nothing when there is nothing to merge", () => {
+    expect(mergeBranches([], 5)).toEqual([]);
+    expect(mergeBranches([[], []], 5)).toEqual([]);
   });
 });
 

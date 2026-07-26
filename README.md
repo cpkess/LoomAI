@@ -21,6 +21,17 @@ That starts a **new round**, and it is not a re-run. The problem is **re-diagnos
 
 What makes rounds cheap: **evidence already gathered is carried forward**, so a follow-up builds on what's known instead of paying to rediscover it. This round's findings get first call on the evidence budget, though — otherwise well-scored older evidence would crowd out the very thing you asked for. **Earlier rounds are kept**, not overwritten: switch between them, compare, and download any one of them. A steer that turns out to be a dead end costs you nothing.
 
+### Branching and merging
+
+A steer **branches from the round you're looking at**, so two avenues can be explored from the same starting point rather than stacked in a line. The **Rounds** panel shows the lineage as an indented list — deliberately a list and not a node-and-edge diagram, because real projects produce a handful of branches two or three deep, and at that size an indented list is the legible option.
+
+Tick two or more rounds and **Compare** them. This is a merge, but not a diff: you cannot reconcile *"partner-led entry"* and *"acquire a local competitor"* by combining their text — something has to weigh them and decide. So **a merge here is a solve**. It pools the branches' evidence, shows the solver what each avenue concluded and why it was pursued, and asks for one recommendation that accounts for both, saying which avenue wins and what would have to be true for the other to win instead.
+
+Two rules make the comparison fair:
+
+- **Neither avenue is starved.** Pooled evidence is rotated across branches rather than ranked flat, so the better-sourced avenue can't fill the budget. Evidence both branches found is counted once and costs one slot.
+- **No fresh research.** The evidence already exists on both sides, and gathering more risks the comparison drifting to a third avenue. To widen it, steer the comparison round afterwards — that path does research.
+
 Everything below is how the project builds the context and evidence the Solution stands on. There is no AI org chart — projects spin up **ephemeral subagents** (a persona for one task, gone when done), so it all works with zero setup. LM Studio is a first-class inference engine; any OpenAI-style API works too.
 
 ### Sourcing you can check
