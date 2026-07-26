@@ -1,0 +1,54 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: loomai
+      POSTGRES_PASSWORD: loomai
+      POSTGRES_DB: loomai
+    ports:
+      - "5432:5432"
+    volumes:
+      - loomai-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loomai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      args:
+        # Optional: stamp the built commit (e.g. LOOMAI_BUILD_COMMIT=$(git rev-parse HEAD)).
+        LOOMAI_BUILD_COMMIT: ${LOOMAI_BUILD_COMMIT:-}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://loomai:loomai@db:5432/loomai
+      # Optional: pin your own secret (openssl rand -base64 32). When unset,
+      # one is generated on first boot and persisted in the loomai-data volume.
+      LOOMAI_SECRET: ${LOOMAI_SECRET:-}
+      # Optional: password for the seeded admin@loomai.local account
+      # (default: loomai-admin).
+      LOOMAI_ADMIN_PASSWORD: ${LOOMAI_ADMIN_PASSWORD:-}
+      AUTH_TRUST_HOST: "true"
+      # In-app "Software update": set to 1 to allow one-click updates from
+      # GitHub (Platform admin → Software update). Off by default.
+      LOOMAI_SELF_UPDATE: ${LOOMAI_SELF_UPDATE:-}
+      # Optional overrides for where updates pull from.
+      LOOMAI_REPO_URL: ${LOOMAI_REPO_URL:-}
+      LOOMAI_UPDATE_REF: ${LOOMAI_UPDATE_REF:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - loomai-data:/data
+    extra_hosts:
+      # Lets the app reach an LM Studio / Ollama server running on the host machine
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  loomai-db:
+  loomai-data:

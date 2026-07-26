@@ -1,0 +1,1141 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+import { ProjectChat } from "./project-chat";
+import { ProjectScoping, PlanPanel, type Charter } from "./project-scoping";
+import { ProjectSolution } from "./project-solution";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Clock,
+  Download,
+  FileStack,
+  FolderKanban,
+  HelpCircle,
+  Lightbulb,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Target,
+} from "lucide-react";
+import { toast } from "sonner";
+
+import { DELIVERABLE_KINDS, KIND_LABELS, structuredKind } from "@/lib/projects/deliverableKinds";
+
+import { Markdown } from "@/components/chat/markdown";
+import { OutputActions } from "@/components/output/output-actions";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+
+interface ProjectListItem {
+  id: string;
+  title: string;
+  description: string | null;
+  status: string;
+  nextSteps: string | null;
+  itemCount: number;
+  openQuestions: number;
+  challenged: number;
+  stale: number;
+  sourceCount: number;
+  deliverableCount: number;
+  updatedAt: string;
+}
+
+export function ProjectsView({ orgSlug }: { orgSlug: string }) {
+  const [projects, setProjects] = useState<ProjectListItem[] | null>(null);
+  const [prompt, setPrompt] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects`);
+    if (res.ok) setProjects((await res.json()).projects);
+  }, [orgSlug]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function create() {
+    const body = prompt.trim();
+    if (!body) return;
+    setCreating(true);
+    const res = await fetch(`/api/orgs/${orgSlug}/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: body }),
+    });
+    setCreating(false);
+    if (!res.ok) {
+      toast.error("Could not create project");
+      return;
+    }
+    const { project } = await res.json();
+    setPrompt("");
+    await load();
+    setOpenId(project.id);
+  }
+
+  if (openId) {
+    return <ProjectDetail orgSlug={orgSlug} projectId={openId} onBack={() => { setOpenId(null); void load(); }} />;
+  }
+
+  return (
+    <>
+      <div className="flex flex-col gap-1">
+        <h1 className="text-xl font-semibold">Projects</h1>
+        <p className="text-sm text-muted-foreground">
+          Describe what you want to solve. Each project is a living workspace — add sources, build knowledge, and
+          produce a verified solution and deliverables.
+        </p>
+      </div>
+
+      <Card>
+        <CardContent className="flex flex-col gap-3 py-4">
+          <Textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={4}
+            autoFocus
+            placeholder="Describe what you want to solve — a decision, a question, a piece of work…"
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void create();
+            }}
+          />
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">⌘/Ctrl + Enter to create</span>
+            <Button onClick={() => void create()} disabled={creating || !prompt.trim()}>
+              {creating ? <Loader2 className="animate-spin" /> : <Sparkles />}
+              Create project
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {projects === null ? (
+        <Card>
+          <CardContent className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            Loading…
+          </CardContent>
+        </Card>
+      ) : projects.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
+            <FolderKanban className="size-8" />
+            No projects yet. Describe something above to start your first one.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {projects.map((p) => (
+            <Card key={p.id} className="cursor-pointer transition-colors hover:border-primary/40" onClick={() => setOpenId(p.id)}>
+              <CardHeader>
+                <div className="flex items-start gap-3">
+                  <FolderKanban className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <CardTitle className="flex items-center gap-2 truncate">
+                      {p.title}
+                      {p.status === "planning" && <Badge variant="warning">scoping</Badge>}
+                    </CardTitle>
+                    {p.description && <CardDescription className="truncate">{p.description}</CardDescription>}
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                      <Badge variant="secondary">{p.itemCount} knowledge</Badge>
+                      {p.openQuestions > 0 && <Badge variant="outline">{p.openQuestions} open questions</Badge>}
+                      {p.challenged > 0 && <Badge variant="warning">{p.challenged} challenged</Badge>}
+                      {p.stale > 0 && <Badge variant="warning">{p.stale} stale</Badge>}
+                      <Badge variant="secondary">{p.sourceCount} sources</Badge>
+                      <Badge variant="secondary">{p.deliverableCount} deliverables</Badge>
+                    </div>
+                  </div>
+                </div>
+              </CardHeader>
+            </Card>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+// --- Project detail --------------------------------------------------------
+
+interface Project {
+  id: string;
+  title: string;
+  description: string | null;
+  status: string;
+  charter: Charter | null;
+  nextSteps: string | null;
+  lastAnalyzedAt: string | null;
+}
+
+function ProjectDetail({ orgSlug, projectId, onBack }: { orgSlug: string; projectId: string; onBack: () => void }) {
+  const [project, setProject] = useState<Project | null>(null);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}`);
+    if (res.ok) setProject((await res.json()).project);
+  }, [orgSlug, projectId]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <>
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" size="sm" onClick={onBack}>
+          <ArrowLeft />
+          Projects
+        </Button>
+      </div>
+      <div>
+        <h1 className="text-xl font-semibold">{project?.title ?? "…"}</h1>
+        {project?.description && <p className="text-sm text-muted-foreground">{project.description}</p>}
+      </div>
+
+      {project?.status === "planning" ? (
+        <ProjectScoping orgSlug={orgSlug} projectId={projectId} onFinalized={() => void load()} />
+      ) : (
+        <ProjectTabs orgSlug={orgSlug} projectId={projectId} />
+      )}
+    </>
+  );
+}
+
+function ProjectTabs({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
+  return (
+    <>
+      <Tabs defaultValue="solution">
+        <TabsList>
+          <TabsTrigger value="solution">Solution</TabsTrigger>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="sources">Sources</TabsTrigger>
+          <TabsTrigger value="knowledge">Knowledge</TabsTrigger>
+          <TabsTrigger value="deliverables">Deliverables</TabsTrigger>
+          <TabsTrigger value="chat">Chat</TabsTrigger>
+        </TabsList>
+        <TabsContent value="solution" className="pt-3">
+          <ProjectSolution orgSlug={orgSlug} projectId={projectId} />
+        </TabsContent>
+        <TabsContent value="overview" className="pt-3">
+          <OverviewTab orgSlug={orgSlug} projectId={projectId} />
+        </TabsContent>
+        <TabsContent value="sources" className="pt-3">
+          <SourcesTab orgSlug={orgSlug} projectId={projectId} />
+        </TabsContent>
+        <TabsContent value="knowledge" className="pt-3">
+          <KnowledgeTab orgSlug={orgSlug} projectId={projectId} />
+        </TabsContent>
+        <TabsContent value="deliverables" className="pt-3">
+          <DeliverablesTab orgSlug={orgSlug} projectId={projectId} />
+        </TabsContent>
+        <TabsContent value="chat" className="pt-3">
+          <ProjectChat orgSlug={orgSlug} projectId={projectId} />
+        </TabsContent>
+      </Tabs>
+    </>
+  );
+}
+
+// --- Overview / resume briefing --------------------------------------------
+
+interface Briefing {
+  nextSteps: string | null;
+  lastAnalyzedAt: string | null;
+  counts: { items: number; sources: number; deliverables: number };
+  changedSince: { events: number; label: string };
+  openQuestions: { id: string; content: string }[];
+  challenged: { id: string; content: string }[];
+  risks: { id: string; content: string }[];
+  stale: { id: string; type: string; content: string }[];
+  themes: { label: string; size: number }[];
+  gaps: { kind: string; content: string }[];
+  investigations: { reason: string; content: string }[];
+  timeline: { id: string; kind: string; summary: string; createdAt: string }[];
+}
+
+function OverviewTab({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
+  const [briefing, setBriefing] = useState<Briefing | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/briefing`);
+    if (res.ok) setBriefing((await res.json()).briefing);
+  }, [orgSlug, projectId]);
+  useEffect(() => {
+    void load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  async function reevaluate() {
+    setBusy(true);
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/reevaluate`, { method: "POST" });
+    setBusy(false);
+    if (res.ok) {
+      toast.success("Re-evaluated");
+      void load();
+    } else toast.error("Could not re-evaluate");
+  }
+
+  if (!briefing) return <Loading />;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <Badge variant="secondary">{briefing.counts.items} knowledge items</Badge>
+        <Badge variant="secondary">{briefing.counts.sources} sources</Badge>
+        <span>{briefing.changedSince.events} changes {briefing.changedSince.label}</span>
+        <Button variant="outline" size="sm" className="ml-auto" disabled={busy} onClick={reevaluate}>
+          {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+          Re-evaluate
+        </Button>
+      </div>
+
+      <WorkPlanCard orgSlug={orgSlug} projectId={projectId} />
+
+      {briefing.nextSteps && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Sparkles className="size-4 text-primary" />
+              Recommended next steps
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Markdown>{briefing.nextSteps}</Markdown>
+          </CardContent>
+        </Card>
+      )}
+
+      {briefing.investigations.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Lightbulb className="size-4 text-primary" />
+              Suggested next investigations
+            </CardTitle>
+            <CardDescription>What to dig into next, based on gaps and contradictions.</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-1.5">
+            {briefing.investigations.map((inv, i) => (
+              <p key={i} className="text-sm">
+                • {inv.content}
+                <span className="ml-2 text-xs text-muted-foreground">({inv.reason.replace(/_/g, " ")})</span>
+              </p>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ItemPanel title="Emerging themes" icon={Sparkles} tone="text-violet-500" items={briefing.themes.map((t) => `${t.label} (${t.size})`)} empty="No themes yet." />
+        <ItemPanel title="Missing information" icon={HelpCircle} tone="text-sky-500" items={briefing.gaps.map((g) => g.content)} empty="No obvious gaps." />
+        <ItemPanel title="Needs attention: stale" icon={Clock} tone="text-amber-500" items={briefing.stale.map((i) => i.content)} empty="Nothing stale." />
+        <ItemPanel title="Contradictions / challenged" icon={AlertTriangle} tone="text-amber-500" items={briefing.challenged.map((i) => i.content)} empty="No unresolved contradictions." />
+        <ItemPanel title="Open questions" icon={HelpCircle} tone="text-sky-500" items={briefing.openQuestions.map((i) => i.content)} empty="No open questions." />
+        <ItemPanel title="Risks" icon={AlertTriangle} tone="text-red-500" items={briefing.risks.map((i) => i.content)} empty="No active risks." />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Timeline</CardTitle>
+          <CardDescription>How the project&apos;s understanding has evolved.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-1.5">
+          {briefing.timeline.length === 0 && <p className="text-sm text-muted-foreground">No activity yet.</p>}
+          {briefing.timeline.map((e) => (
+            <div key={e.id} className="flex items-start gap-2 text-sm">
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{e.kind}</span>
+              <span className="min-w-0 flex-1">{e.summary}</span>
+              <span className="shrink-0 text-xs text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function WorkPlanCard({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
+  const [charter, setCharter] = useState<Charter | null | undefined>(undefined);
+  const [generating, setGenerating] = useState<number | null>(null);
+  const [reopening, setReopening] = useState(false);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}`);
+    if (res.ok) setCharter((await res.json()).project.charter ?? null);
+  }, [orgSlug, projectId]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function generate(index: number, d: { title: string; kind: string; brief: string }) {
+    setGenerating(index);
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/deliverables`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: d.title, kind: d.kind, brief: d.brief || undefined }),
+    });
+    setGenerating(null);
+    if (res.ok) toast.success(`Producing "${d.title}" — see Deliverables`);
+    else toast.error("Could not start that deliverable");
+  }
+
+  async function reopen() {
+    setReopening(true);
+    await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/scoping/reopen`, { method: "POST" });
+    setReopening(false);
+    window.location.reload();
+  }
+
+  if (!charter || !charter.objective) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Target className="size-4 text-primary" />
+            Work plan
+          </CardTitle>
+          <Button variant="ghost" size="sm" onClick={reopen} disabled={reopening}>
+            {reopening ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            Re-scope
+          </Button>
+        </div>
+        <CardDescription>The objective and scope this project is working toward.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <PlanPanel charter={charter} hideDeliverables />
+        {charter.deliverables?.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <div className="text-xs font-medium text-muted-foreground">Generate a planned deliverable</div>
+            <div className="flex flex-wrap gap-2">
+              {charter.deliverables.map((d, i) => (
+                <Button key={i} variant="outline" size="sm" onClick={() => generate(i, d)} disabled={generating !== null}>
+                  {generating === i ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                  {d.title}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ItemPanel({ title, icon: Icon, tone, items, empty }: { title: string; icon: typeof Clock; tone: string; items: string[]; empty: string }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon className={`size-4 ${tone}`} />
+          {title} {items.length > 0 && <Badge variant="warning">{items.length}</Badge>}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-1.5">
+        {items.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{empty}</p>
+        ) : (
+          items.map((c, i) => (
+            <p key={i} className="text-sm">
+              • {c}
+            </p>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// --- Sources ---------------------------------------------------------------
+
+interface SourceRow {
+  id: string;
+  kind: string;
+  title: string;
+  status: string;
+  error: string | null;
+  createdAt: string;
+}
+
+function SourcesTab({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
+  const [sources, setSources] = useState<SourceRow[] | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/sources`);
+    if (res.ok) setSources((await res.json()).sources);
+  }, [orgSlug, projectId]);
+  useEffect(() => {
+    void load();
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">Add documents, notes, research or emails — each is analyzed into the project&apos;s knowledge.</p>
+        <Button size="sm" onClick={() => setAdding(true)}>
+          <Plus />
+          Add source
+        </Button>
+      </div>
+      {sources === null ? (
+        <Loading />
+      ) : sources.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No sources yet.</p>
+      ) : (
+        sources.map((s) => (
+          <div key={s.id} className="flex items-center gap-3 rounded-md border p-3">
+            <FileStack className="size-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">{s.title}</div>
+              <div className="text-xs text-muted-foreground">{s.kind}</div>
+            </div>
+            {s.status === "pending" ? (
+              <Badge variant="warning">
+                <Loader2 className="size-3 animate-spin" />
+                analyzing
+              </Badge>
+            ) : s.status === "analyzed" ? (
+              <Badge variant="success">analyzed</Badge>
+            ) : (
+              <Badge variant="destructive">error</Badge>
+            )}
+          </div>
+        ))
+      )}
+      {adding && <AddSourceDialog orgSlug={orgSlug} projectId={projectId} onClose={(saved) => { setAdding(false); if (saved) void load(); }} />}
+    </div>
+  );
+}
+
+// --- Knowledge graph -------------------------------------------------------
+
+interface KItem {
+  id: string;
+  type: string;
+  content: string;
+  status: string;
+  confidence: number;
+}
+
+function statusBadge(status: string) {
+  switch (status) {
+    case "challenged":
+      return <Badge variant="warning">challenged</Badge>;
+    case "stale":
+      return <Badge variant="warning">stale</Badge>;
+    case "resolved":
+      return <Badge variant="success">resolved</Badge>;
+    case "superseded":
+      return <Badge variant="outline">superseded</Badge>;
+    default:
+      return <Badge variant="secondary">active</Badge>;
+  }
+}
+
+function KnowledgeTab({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
+  const [data, setData] = useState<{ items: KItem[]; edges: { relation: string }[] } | null>(null);
+  const [openItem, setOpenItem] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/knowledge`);
+    if (res.ok) {
+      const b = await res.json();
+      setData({ items: b.items, edges: b.edges });
+    }
+  }, [orgSlug, projectId]);
+  useEffect(() => {
+    void load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  if (!data) return <Loading />;
+  const byType = new Map<string, KItem[]>();
+  for (const i of data.items) byType.set(i.type, [...(byType.get(i.type) ?? []), i]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        {data.items.length} knowledge items, {data.edges.length} relationships. Click an item to see its evidence and how it evolved.
+      </p>
+      {data.items.length === 0 && <p className="text-sm text-muted-foreground">Add a source to start building knowledge.</p>}
+      {[...byType.entries()].map(([type, items]) => (
+        <div key={type} className="flex flex-col gap-2">
+          <h3 className="text-sm font-medium capitalize text-muted-foreground">{type}s</h3>
+          {items.map((i) => (
+            <button
+              key={i.id}
+              className="flex items-start gap-2 rounded-md border p-2.5 text-left text-sm hover:border-primary/40"
+              onClick={() => setOpenItem(i.id)}
+            >
+              <Lightbulb className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1">{i.content}</span>
+              {statusBadge(i.status)}
+            </button>
+          ))}
+        </div>
+      ))}
+      {openItem && <ProvenanceDialog orgSlug={orgSlug} projectId={projectId} itemId={openItem} onClose={() => { setOpenItem(null); void load(); }} />}
+    </div>
+  );
+}
+
+function ProvenanceDialog({ orgSlug, projectId, itemId, onClose }: { orgSlug: string; projectId: string; itemId: string; onClose: () => void }) {
+  const [data, setData] = useState<{
+    item: KItem;
+    evidence: { id: string; snippet: string }[];
+    edges: { relation: string; rationale: string | null }[];
+    history: { id: string; kind: string; summary: string; createdAt: string }[];
+  } | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/orgs/${orgSlug}/projects/${projectId}/knowledge/${itemId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setData)
+      .catch(() => {});
+  }, [orgSlug, projectId, itemId]);
+
+  async function act(patch: Record<string, unknown>) {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/knowledge/${itemId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (res.ok) {
+      toast.success("Updated");
+      onClose();
+    } else toast.error("Could not update");
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[85svh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="text-base">Knowledge item</DialogTitle>
+          <DialogDescription>Its evidence, relationships, and how it evolved.</DialogDescription>
+        </DialogHeader>
+        {!data ? (
+          <Loading />
+        ) : (
+          <div className="flex flex-col gap-3 text-sm">
+            <div className="rounded-md border p-3">
+              <div className="mb-1 flex items-center gap-2">
+                <Badge variant="secondary" className="capitalize">{data.item.type}</Badge>
+                {statusBadge(data.item.status)}
+                <span className="text-xs text-muted-foreground">confidence {Math.round(data.item.confidence * 100)}%</span>
+              </div>
+              {data.item.content}
+            </div>
+            <div>
+              <div className="pb-1 text-xs font-medium text-muted-foreground">Evidence</div>
+              {data.evidence.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No evidence recorded.</p>
+              ) : (
+                data.evidence.map((e) => (
+                  <p key={e.id} className="border-l-2 pl-2 text-xs text-muted-foreground">{e.snippet}</p>
+                ))
+              )}
+            </div>
+            {data.edges.length > 0 && (
+              <div>
+                <div className="pb-1 text-xs font-medium text-muted-foreground">Relationships</div>
+                {data.edges.map((e, i) => (
+                  <p key={i} className="text-xs">
+                    <Badge variant="outline" className="mr-1">{e.relation}</Badge>
+                    {e.rationale}
+                  </p>
+                ))}
+              </div>
+            )}
+            <div>
+              <div className="pb-1 text-xs font-medium text-muted-foreground">History</div>
+              {data.history.map((h) => (
+                <div key={h.id} className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="rounded bg-muted px-1 py-0.5 text-[10px]">{h.kind}</span>
+                  {h.summary}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={() => act({ markReviewed: true })}>
+            Confirm still valid
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => act({ status: "resolved" })}>
+            Mark resolved
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// --- Deliverables ----------------------------------------------------------
+
+interface DeliverableRow {
+  id: string;
+  title: string;
+  kind: string;
+  status: string;
+  iteration: number;
+}
+
+function DeliverablesTab({ orgSlug, projectId }: { orgSlug: string; projectId: string }) {
+  const [rows, setRows] = useState<DeliverableRow[] | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/deliverables`);
+    if (res.ok) setRows((await res.json()).deliverables);
+  }, [orgSlug, projectId]);
+  useEffect(() => {
+    void load();
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  async function generate() {
+    setGenerating(true);
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/deliverables/generate`, { method: "POST" });
+    setGenerating(false);
+    if (!res.ok) {
+      toast.error("Could not generate deliverables");
+      return;
+    }
+    const { created } = await res.json();
+    toast.success(created > 0 ? `Generating ${created} deliverable${created === 1 ? "" : "s"} from the work plan` : "Everything in the plan is already generated");
+    void load();
+  }
+
+  if (openId) return <DeliverableDetail orgSlug={orgSlug} projectId={projectId} deliverableId={openId} onBack={() => { setOpenId(null); void load(); }} />;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm text-muted-foreground">Big outputs produced by an orchestrated multi-agent workflow — plan, write, critique, revise.</p>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button size="sm" onClick={generate} disabled={generating}>
+            {generating ? <Loader2 className="animate-spin" /> : <Sparkles />}
+            Generate deliverables
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
+            <Plus />
+            New deliverable
+          </Button>
+        </div>
+      </div>
+      {rows === null ? (
+        <Loading />
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No deliverables yet.</p>
+      ) : (
+        rows.map((d) => (
+          <button key={d.id} className="flex items-center gap-3 rounded-md border p-3 text-left hover:border-primary/40" onClick={() => setOpenId(d.id)}>
+            <FileStack className="size-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">{d.title}</div>
+              <div className="text-xs text-muted-foreground">{d.kind}</div>
+            </div>
+            {deliverableBadge(d.status)}
+          </button>
+        ))
+      )}
+      {creating && <CreateDeliverableDialog orgSlug={orgSlug} projectId={projectId} onClose={(saved) => { setCreating(false); if (saved) void load(); }} />}
+    </div>
+  );
+}
+
+function deliverableBadge(status: string) {
+  if (status === "completed") return <Badge variant="success">completed</Badge>;
+  if (status === "failed") return <Badge variant="destructive">failed</Badge>;
+  return (
+    <Badge variant="warning">
+      <Loader2 className="size-3 animate-spin" />
+      {status}
+    </Badge>
+  );
+}
+
+interface Section {
+  id: string;
+  heading: string;
+  brief: string | null;
+  role: string;
+  status: string;
+  content: string | null;
+  revision: number;
+  issues: { kind: string; detail: string; severity: string }[];
+}
+
+function DeliverableDetail({ orgSlug, projectId, deliverableId, onBack }: { orgSlug: string; projectId: string; deliverableId: string; onBack: () => void }) {
+  const [data, setData] = useState<{
+    deliverable: { title: string; kind: string; status: string; iteration: number; content: string | null };
+    sections: Section[];
+    events: { id: string; kind: string; role: string | null; summary: string; createdAt: string }[];
+  } | null>(null);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/deliverables/${deliverableId}`);
+    if (res.ok) setData(await res.json());
+  }, [orgSlug, projectId, deliverableId]);
+  useEffect(() => {
+    void load();
+    const active = data?.deliverable.status !== "completed" && data?.deliverable.status !== "failed";
+    const t = setInterval(load, active ? 2500 : 8000);
+    return () => clearInterval(t);
+  }, [load, data?.deliverable.status]);
+
+  async function regenerate(sectionId: string) {
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/deliverables/${deliverableId}/sections/${sectionId}/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (res.ok) {
+      toast.success("Regenerating section");
+      void load();
+    } else toast.error("Could not regenerate");
+  }
+
+  if (!data) return <Loading />;
+  const d = data.deliverable;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" size="sm" onClick={onBack}>
+          <ArrowLeft />
+          Deliverables
+        </Button>
+        {deliverableBadge(d.status)}
+        {d.iteration > 0 && <Badge variant="outline">revision round {d.iteration}</Badge>}
+      </div>
+      <div>
+        <h2 className="text-lg font-semibold">{d.title}</h2>
+        <p className="text-xs text-muted-foreground">{d.kind}</p>
+      </div>
+
+      {d.status === "completed" && d.content && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Final document</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {structuredKind(d.kind) && (
+              <div className="mb-3">
+                <Button asChild size="sm">
+                  <a
+                    href={`/api/orgs/${orgSlug}/projects/${projectId}/deliverables/${deliverableId}/download?format=${
+                      structuredKind(d.kind) === "presentation" ? "pptx" : "xlsx"
+                    }`}
+                  >
+                    <Download />
+                    Download {structuredKind(d.kind) === "presentation" ? ".pptx" : ".xlsx"}
+                  </a>
+                </Button>
+              </div>
+            )}
+            <Markdown>{d.content}</Markdown>
+            <OutputActions className="mt-2" text={d.content} defaultTitle={d.title} />
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="flex flex-col gap-2">
+        <h3 className="text-sm font-medium text-muted-foreground">Outline</h3>
+        {data.sections.map((s, i) => (
+          <div key={s.id} className="rounded-lg border">
+            <div className="flex items-center gap-2 p-3">
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-background text-xs font-semibold text-muted-foreground ring-1 ring-border">{i + 1}</span>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">{s.heading}</div>
+                {s.brief && <div className="truncate text-xs text-muted-foreground">{s.brief}</div>}
+              </div>
+              <Badge variant="outline" className="text-[10px]">{s.role}</Badge>
+              {sectionBadge(s.status)}
+            </div>
+            {s.content && (
+              <div className="border-t p-3 text-sm">
+                <Markdown>{s.content}</Markdown>
+                {s.issues.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs">
+                    {s.issues.map((iss, j) => (
+                      <div key={j}>
+                        <span className="font-medium">{iss.severity}</span> · {iss.kind}: {iss.detail}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {d.status === "completed" && (
+                  <Button variant="outline" size="sm" className="mt-2" onClick={() => regenerate(s.id)}>
+                    <RefreshCw />
+                    Regenerate
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Production log</CardTitle>
+          <CardDescription>Every step of the multi-stage workflow.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-1.5">
+          {data.events.map((e) => (
+            <div key={e.id} className="flex items-start gap-2 text-sm">
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{e.kind}</span>
+              <span className="min-w-0 flex-1">{e.summary}</span>
+              {e.role && <span className="shrink-0 text-xs text-muted-foreground">{e.role}</span>}
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function sectionBadge(status: string) {
+  switch (status) {
+    case "approved":
+      return <Badge variant="success">approved</Badge>;
+    case "drafted":
+      return <Badge variant="secondary">drafted</Badge>;
+    case "reviewing":
+      return <Badge variant="warning">reviewing</Badge>;
+    case "revising":
+      return (
+        <Badge variant="warning">
+          <Loader2 className="size-3 animate-spin" />
+          revising
+        </Badge>
+      );
+    case "drafting":
+      return (
+        <Badge variant="warning">
+          <Loader2 className="size-3 animate-spin" />
+          drafting
+        </Badge>
+      );
+    default:
+      return <Badge variant="outline">planned</Badge>;
+  }
+}
+
+// --- Dialogs & helpers -----------------------------------------------------
+
+function Loading() {
+  return (
+    <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+      <Loader2 className="size-4 animate-spin" />
+      Loading…
+    </div>
+  );
+}
+
+function AddSourceDialog({ orgSlug, projectId, onClose }: { orgSlug: string; projectId: string; onClose: (saved: boolean) => void }) {
+  const [mode, setMode] = useState<"text" | "file" | "url">("text");
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [url, setUrl] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [pending, setPending] = useState(false);
+  const endpoint = `/api/orgs/${orgSlug}/projects/${projectId}/sources`;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setPending(true);
+    let res: Response;
+    if (mode === "file") {
+      if (!file) return setPending(false);
+      const fd = new FormData();
+      fd.append("file", file);
+      res = await fetch(endpoint, { method: "POST", body: fd });
+    } else if (mode === "url") {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "research", title: title || url, url }),
+      });
+    } else {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "note", title, content }),
+      });
+    }
+    setPending(false);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      toast.error(body.error ?? "Could not add source");
+      return;
+    }
+    toast.success("Source added — analyzing into the project's knowledge");
+    onClose(true);
+  }
+
+  const disabled =
+    pending ||
+    (mode === "text" && (!title.trim() || !content.trim())) ||
+    (mode === "file" && !file) ||
+    (mode === "url" && !url.trim());
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose(false)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add a source</DialogTitle>
+          <DialogDescription>
+            Paste text, upload a file (PDF, Word, PowerPoint, Excel, images, transcripts, ZIP…), or import a web page.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex gap-1 rounded-md bg-muted p-1 text-sm">
+          {(["text", "file", "url"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              className={`flex-1 rounded px-2 py-1 capitalize transition-colors ${mode === m ? "bg-background shadow-sm" : "text-muted-foreground"}`}
+            >
+              {m === "url" ? "Web page" : m}
+            </button>
+          ))}
+        </div>
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          {mode === "text" && (
+            <>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="s-title">Title</Label>
+                <Input id="s-title" value={title} onChange={(e) => setTitle(e.target.value)} required />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="s-content">Content</Label>
+                <Textarea id="s-content" value={content} onChange={(e) => setContent(e.target.value)} rows={8} placeholder="Paste the text to analyze…" />
+              </div>
+            </>
+          )}
+          {mode === "file" && (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="s-file">File</Label>
+              <Input
+                id="s-file"
+                type="file"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                accept=".pdf,.docx,.pptx,.xlsx,.md,.txt,.csv,.json,.html,.htm,.vtt,.srt,.zip,.png,.jpg,.jpeg,.gif,.webp"
+              />
+              <p className="text-xs text-muted-foreground">Structure and metadata (slides, sheets) are preserved.</p>
+            </div>
+          )}
+          {mode === "url" && (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="s-url">Page URL</Label>
+              <Input id="s-url" type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" />
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="submit" disabled={disabled}>
+              {pending ? "Adding…" : "Add & analyze"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CreateDeliverableDialog({ orgSlug, projectId, onClose }: { orgSlug: string; projectId: string; onClose: (saved: boolean) => void }) {
+  const [title, setTitle] = useState("");
+  const [kind, setKind] = useState("report");
+  const [brief, setBrief] = useState("");
+  const [pending, setPending] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setPending(true);
+    const res = await fetch(`/api/orgs/${orgSlug}/projects/${projectId}/deliverables`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, kind, brief: brief || undefined }),
+    });
+    setPending(false);
+    if (!res.ok) {
+      toast.error("Could not create deliverable");
+      return;
+    }
+    toast.success("Producing — the team is planning the outline");
+    onClose(true);
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose(false)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>New deliverable</DialogTitle>
+          <DialogDescription>Produced by an orchestrated workflow: outline → specialist writers → critique → revision.</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="d-title">Title</Label>
+              <Input id="d-title" value={title} onChange={(e) => setTitle(e.target.value)} required autoFocus />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label>Type</Label>
+              <Select value={kind} onValueChange={setKind}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DELIVERABLE_KINDS.map((k) => (
+                    <SelectItem key={k} value={k}>
+                      {KIND_LABELS[k]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="d-brief">Brief</Label>
+            <Textarea id="d-brief" value={brief} onChange={(e) => setBrief(e.target.value)} rows={3} placeholder="What should this deliverable achieve and cover?" />
+          </div>
+          <DialogFooter>
+            <Button type="submit" disabled={pending || !title.trim()}>
+              {pending ? "Starting…" : "Start production"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
